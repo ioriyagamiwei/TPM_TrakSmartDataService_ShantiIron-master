@@ -1,0 +1,3757 @@
+﻿using Modbus.Device;
+using Modbus.Utility;
+using S7.Net;
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.Data.SqlClient;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
+using System.Reflection;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace TPM_TrakSmartDataService_Phantom
+{
+	class CreateClient
+	{
+		private string _ipAddress;
+		private string _machineId;
+		private int _portNo;
+		private int _opnID;
+		private string _interfaceId;
+		private string _reqFolderPath;
+		private string _resFolderPath;
+		private string _ackFolderPath;
+		private string _spcFolderPath;
+		private string _protocol;
+		private string MName;
+		MachineInfoDTO _machineDTO = null;
+
+
+		private static string appPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+		private static DateTime _serviceStartedTimeStamp = DateTime.Now;
+		private static DateTime _nextLicCheckedTimeStamp = _serviceStartedTimeStamp;
+
+		Plc PhantomClient = null;
+		Plc LeakTestClient = null;
+		Plc WashingMachineClient = null;
+		private Socket socket = default(Socket);
+		bool PhantomStatus = false;
+
+		//Modbus
+		string cur_id;
+		ushort commNo = 100;
+		private readonly ushort holdingRegisterStartAddress = 100;
+		private readonly ushort numberOfBytesToRead = 70;
+		private readonly ushort AckHoldingRegisterAddress = 200;
+		private readonly ushort DateAndStatusAckAddress = 700;
+		private readonly ushort HoldingRegisterDateAndStatus = 400;
+		private readonly ushort HoldingRegister28TypeString = 300;
+		private readonly ushort BytesToRead28Type = 70;
+		private readonly ushort AckAddressFor28TypeString = 500;
+		private readonly ushort HoldingRegisterForCommunictaion = 600;
+
+		//DailyCheckList for Shanthi Iron
+		private readonly ushort HoldingRegisterDailyCheckList = 450;//Date and time :452 and 454 ......
+		private readonly ushort HoldingFlagsRegisterDailyCheckList = 540;
+		List<dailyCheckList> dailyChkLsts = new List<dailyCheckList>();
+
+		//PM CheckList for Shanthi Iron
+		#region PM CheckList Holding Regs Address
+		private readonly ushort HoldingRegisterPMCheckList70Perc = 532;
+		private readonly ushort HoldingRegisterPMCheckListOKNOTOK = 533;
+		private readonly ushort HoldingRegisterPMCheckListAllDone = 534;
+
+		private readonly ushort HoldingRegisterStr56PMMachineID = 501;
+		private readonly ushort HoldingRegisterStr56PMSelectionCode = 502;
+		private readonly ushort HoldingRegisterStr56PMTarget = 504;
+		private readonly ushort HoldingRegisterStr56PMActual = 506;
+		private readonly ushort HoldingRegisterStr56PMPercentage = 503;
+		private readonly ushort HoldingRegisterStr56PMCurDate = 508;
+		private readonly ushort HoldingRegisterStr56PMCurTime = 510;
+
+		private readonly ushort HoldingRegisterStr57PMMachineID = 512;
+		private readonly ushort HoldingRegisterStr57PMOprID = 513;
+		private readonly ushort HoldingRegisterStr57PMCatID = 514;
+		private readonly ushort HoldingRegisterStr57PMSubCatID = 515;
+		private readonly ushort HoldingRegisterStr57PMSelectionCode = 516;
+		private readonly ushort HoldingRegisterStr57PMNOKreason = 517;
+		private readonly ushort HoldingRegisterStr57PMTarget = 518;
+		private readonly ushort HoldingRegisterStr57PMActual = 520;
+		private readonly ushort HoldingRegisterStr57PMCurDate = 522;
+		private readonly ushort HoldingRegisterStr57PMCurTime = 524;
+
+		private readonly ushort HoldingRegisterStr59PMMachineID = 526;
+		private readonly ushort HoldingRegisterStr59PMOprID = 527;
+		private readonly ushort HoldingRegisterStr59PMCurDate = 528;
+		private readonly ushort HoldingRegisterStr59PMCurTime = 530;
+
+        #endregion
+
+        #region Process Patameter Operation For Shanti Iron
+        ushort HoldingRegisterReadParameter = (ushort)1325;
+        ushort HoldingRegisterReadParamValue = (ushort)1550;
+        ushort[] processStrToWrite;
+        ushort HoldingRegisterWriteParameter = (ushort)1100;
+        List<string> processParameter_Strings = new List<string>();
+        #endregion
+
+        private readonly ushort HoldingRegister6_7TypeString;
+		private readonly ushort BytesToRead6_7Type;
+		private readonly ushort AckAddressFor6_7TypeString;
+
+		string UnprocessedFilePath = Path.Combine(appPath, "Unprocessed");
+		string ProcessedFilePath = Path.Combine(appPath, "Processed");
+		CultureInfo enUS = new CultureInfo("en-US");
+
+		public CreateClient(MachineInfoDTO machine)
+		{
+			this._machineDTO = machine;
+			this._ipAddress = machine.IpAddress;
+			this._portNo = machine.PortNo;
+			this._opnID = machine.OpnID;
+			this._machineId = machine.MachineId;
+			this._interfaceId = machine.InterfaceId;
+			this._protocol = string.IsNullOrEmpty(machine.DataCollectionProtocol) ? "RAW" : machine.DataCollectionProtocol;
+            this._reqFolderPath = Path.Combine(machine.REQFolderPath, "UnProcessed");
+			this._resFolderPath = Path.Combine(machine.RESFolderPath, "UnProcessed");
+			this._ackFolderPath = Path.Combine(machine.ACKFolderPath, "UnProcessed");
+			this._spcFolderPath = Path.Combine(machine.SPCFolderPath, "UnProcessed");     
+            this.MName = machine.MachineId;
+
+            this.MName = machine.MachineId;
+
+			
+			//MODBUS
+			holdingRegisterStartAddress = machine.HoldingRegisterStartAddress_M1;
+			numberOfBytesToRead = machine.BytesToRead_M1;
+			AckHoldingRegisterAddress = machine.AckAddress_M1;
+
+			HoldingRegister28TypeString = machine.HoldingRegisterStartAddress_M2;
+			BytesToRead28Type = machine.BytesToRead_M2;
+			AckAddressFor28TypeString = machine.AckAddress_M2;
+
+			HoldingRegister6_7TypeString = machine.HoldingRegisterStartAddress_M3;
+			BytesToRead6_7Type = machine.BytesToRead_M3;
+			AckAddressFor6_7TypeString = machine.AckAddress_M3;
+
+			HoldingRegisterForCommunictaion = machine.HoldingRegisterForCommunication;
+			HoldingRegisterDateAndStatus = machine.HoldingRegisterDateAndStatus;
+			DateAndStatusAckAddress = machine.HoldingRegisterDateAndStatusAckAddress;
+
+			cur_id = "0";
+			dailyChkLsts = DatabaseAccess.getCheckListMaster();
+
+            if (!Directory.Exists(this._reqFolderPath))
+            {
+                Directory.CreateDirectory(this._reqFolderPath);
+            }
+            if (!Directory.Exists(this._ackFolderPath))
+            {
+                Directory.CreateDirectory(_ackFolderPath);
+            }
+            if (!Directory.Exists(this._resFolderPath))
+            {
+                Directory.CreateDirectory(_resFolderPath);
+            }
+            if (!Directory.Exists(this._spcFolderPath))
+            {
+                Directory.CreateDirectory(_spcFolderPath);
+            }
+        }
+
+		internal void GetClient()
+		{
+			while (true)
+			{
+				try
+				{
+					#region stop_service                   
+					if (ServiceStop.stop_service == 1)
+					{
+						try
+						{
+							Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+							break;
+						}
+						catch (Exception ex)
+						{
+							Logger.WriteErrorLog(ex.ToString());
+							break;
+						}
+					}
+					#endregion
+
+					#region "CSV"
+					if (_protocol.Equals("csv", StringComparison.OrdinalIgnoreCase))
+					{
+						Logger.WriteDebugLog("Entered into CSV.");
+						#region "Laser Marking Machine"
+						if (_machineDTO.Process.Equals("LaserMarkingMachine",StringComparison.OrdinalIgnoreCase))
+						{
+							string REQsourceFile = string.Empty;
+							string ACKFilePath = string.Empty;
+							string RESsourceFile = string.Empty;
+							string REQDestFile = string.Empty;
+							string RESDestFile = string.Empty;
+							string REQData = string.Empty;
+							string RESData = string.Empty;
+							string PartNumber = string.Empty;
+							string PartSerialNumber = string.Empty;
+							string SupplierCode = string.Empty;
+							string HeatCode = string.Empty;
+							string RevNumber = string.Empty;
+							string DataString = string.Empty;
+							string Comp = string.Empty;
+							string STDATE = DateTime.Now.ToString("yyyyMMdd");
+							string STTIME = DateTime.Now.ToString("HHmmss");
+							int Output = -1;
+
+							Logger.WriteDebugLog("Reading LASER marking machine data.....");
+							try
+							{
+								var REQdirectory = new DirectoryInfo(this._reqFolderPath);
+								var AllREQFiles = REQdirectory.GetFiles("REQ*",SearchOption.TopDirectoryOnly);								
+								foreach (FileInfo f in AllREQFiles)
+								{
+                                    //process file and move file to unprocessed folder
+                                    REQData = File.ReadAllText(f.FullName).Trim(); //REQData : partno-revno-partname-suppliercode-partslNo-heatcode
+                                    if (!string.IsNullOrEmpty(REQData))
+                                    {
+                                        Logger.WriteDebugLog(string.Format("Data from REQ file : {0}", REQData));
+                                        string[] spl = REQData.Split(new string[] { "-" }, StringSplitOptions.None);
+
+                                        PartNumber = spl[0];
+                                        RevNumber = spl[1];
+                                        PartSerialNumber = spl[4];
+
+                                        //START-28-21-[3539598-DX00]-20-N112F-20200606-103850-END
+                                        DataString = string.Format("START-28-{0}-[{1}-{2}]-{3}-{4}-{5}-{6}-END", this._interfaceId, PartNumber, RevNumber, this._opnID.ToString(), PartSerialNumber, STDATE, STTIME);
+
+                                        Logger.WriteDebugLog(string.Format("Updating Data string : {0}", DataString));
+                                        string tempString = DatabaseAccess.GetStatus28Type(DataString.Trim());                                       
+                                        if (!string.IsNullOrEmpty(tempString))
+                                        {
+                                            string DataToWrite = PartNumber + "," + PartSerialNumber + "," + getValidationResult(tempString.ToString()) + ","
+                                                    + DateTime.Now.ToString("yyyyMMddHHmmss");
+
+                                            ACKFilePath = Path.Combine(this._machineDTO.ACKFolderPath,"UnProcessed", string.Format("ACK_{0}_{1}_{2}.csv", this._machineId, PartNumber, DateTime.Now.ToString("yyyyMMdd_HHmmss")));
+
+                                            WriteToACKFile(ACKFilePath, DataToWrite);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        Logger.WriteDebugLog(string.Format("REQ File is not available in this path : {0}", this._reqFolderPath));
+                                    }
+
+                                    REQsourceFile = Path.Combine(this._machineDTO.REQFolderPath, "Processed", f.Name);
+                                    File.Move(f.FullName, REQsourceFile);
+                                    Logger.WriteDebugLog("Files are moved to Processed folder successfully.");
+                                }
+
+                                //process Result file from machine
+                                var RESdirectory = new DirectoryInfo(this._resFolderPath);
+								var AllRESFiles = RESdirectory.GetFiles("RES*", SearchOption.TopDirectoryOnly);
+                                foreach (FileInfo f in AllRESFiles)
+                                {
+                                    try
+                                    {
+                                        RESData = File.ReadAllText(f.FullName);
+                                        //RES data: partno-revno-partname-suppliercode-partslNo-heatcode,Sttime,Endtime,Result
+                                        if (!string.IsNullOrEmpty(RESData))
+                                        {
+                                            DateTime Sttime = DateTime.MinValue;
+                                            DateTime Endtime = DateTime.MinValue;
+
+                                            string[] spl1 = RESData.Split(new string[] { "," }, StringSplitOptions.None);
+                                            string[] BARCODEStringArr = spl1[0].Split(new string[] { "-" }, StringSplitOptions.None);
+                                            Comp = BARCODEStringArr[0] + "-" + BARCODEStringArr[1];
+                                            SupplierCode = BARCODEStringArr[3];
+                                            PartSerialNumber = BARCODEStringArr[4];
+                                            HeatCode = BARCODEStringArr[5];
+
+                                            DateTime.TryParseExact(spl1[1], "yyyyMMddHHmmss", enUS, DateTimeStyles.None, out Sttime);
+                                            DateTime.TryParseExact(spl1[2], "yyyyMMddHHmmss", enUS, DateTimeStyles.None, out Endtime);
+                                            string Result = spl1[3];
+
+                                            Logger.WriteDebugLog(string.Format("Inserting Data into Raw Data.....MachineID : {0}, Comp : {1}, OPN : {2},Sttime: {3}, Endtime : {4}, HeatCode : {5}, Result : {6} ", this._interfaceId, Comp, this._opnID, Sttime.ToString(), Endtime.ToString(), HeatCode, Result));
+
+                                            //TODO - Update the Result to AutoData
+                                            //START-1-MachineID-CompID-OperationID-OperatorID-Partcount-WorkOrder-PartSlNO-SupplierCode-SupervisorCode-StDate-StTime-edate-etime-END
+                                            var type1Str = string.Format("START-1-{0}-[{1}]-{2}-{3}-{4}-{5}-{6}-{7}-{8}-{9}-{10}-{11}-{12}-END", _machineDTO.InterfaceId, Comp, this._opnID, "PCT", "1", HeatCode, PartSerialNumber, SupplierCode, "PCT", Sttime.ToString("yyyyMMdd"), Sttime.ToString("HHmmss"), Endtime.ToString("yyyyMMdd"), Sttime.ToString("HHmmss"));
+                                            //DatabaseAccess.InsertToRawdata(this._interfaceId, this._ipAddress, Comp, this._opnID, Sttime, Endtime, SupplierCode, PartSerialNumber, HeatCode, Result);
+                                            DatabaseAccess.ProcessDataString(type1Str, out Output);
+
+                                            RESsourceFile = Path.Combine(this._machineDTO.RESFolderPath, "Processed", f.Name);
+                                            File.Move(f.FullName, RESsourceFile);
+                                            Logger.WriteDebugLog("Files are moved to Processed folder successfully.");
+                                        }
+                                        else
+                                        {
+                                            Logger.WriteDebugLog(string.Format("RES File is not available in this path : {0}", this._resFolderPath));
+                                        }
+                                    }
+                                    catch(Exception ex)
+                                    {
+                                        Logger.WriteErrorLog(ex.ToString());
+                                    }
+                                  
+                                }
+
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.WriteErrorLog(ex.ToString());
+                            }
+                        }
+						#endregion
+
+						#region "Equator(CompactX)"
+						if (_machineDTO.Process.Equals("Equator(CompactX)", StringComparison.OrdinalIgnoreCase))
+						{
+							string REQsourceFile = string.Empty;
+							string ACKFilePath = string.Empty;
+							string RESsourceFile = string.Empty;
+							string SPCsourceFile = string.Empty;
+							string REQDestFile = string.Empty;
+							string RESDestFile = string.Empty;
+							string SPCDestFile = string.Empty;
+							string REQData = string.Empty;
+							string RESData = string.Empty;
+							string SupplierCode = string.Empty;
+							string PartNumber = string.Empty;
+							string PartSerialNumber = string.Empty;
+							string HeatCode = string.Empty;
+							string RevNumber = string.Empty;
+							string DataString = string.Empty;
+							string Comp = string.Empty;
+							string STDATE = DateTime.Now.ToString("yyyyMMdd");
+							string STTIME = DateTime.Now.ToString("HHmmss");
+							int Output = -1;
+							
+							Logger.WriteDebugLog("Reading Equator data.....");
+							try
+							{
+								var REQdirectory = new DirectoryInfo(this._reqFolderPath);
+								var AllREQFiles = REQdirectory.GetFiles();
+								foreach (FileInfo f in AllREQFiles)
+								{
+									if (f.Name.StartsWith("REQ", StringComparison.InvariantCultureIgnoreCase))
+									{
+										REQsourceFile = Path.Combine(UnprocessedFilePath, Path.GetFileNameWithoutExtension(f.Name) + Path.GetExtension(f.Name));
+										File.Move(f.FullName, REQsourceFile);
+										REQDestFile = Path.Combine(ProcessedFilePath, Path.GetFileNameWithoutExtension(f.Name) + Path.GetExtension(f.Name));
+									}
+
+									if (File.Exists(REQsourceFile))
+									{
+										REQData = File.ReadAllText(REQsourceFile); //REQData : partno-revno-partname-suppliercode-partslNo-heatcode
+										if (!string.IsNullOrEmpty(REQData))
+										{
+											Logger.WriteDebugLog(string.Format("Data from REQ file : {0}", REQData));
+											string[] spl = REQData.Split(new string[] { "-" }, StringSplitOptions.None);
+
+											PartNumber = spl[0];
+											RevNumber = spl[1];
+											PartSerialNumber = spl[4];
+
+											DataString = string.Format("START-28-{0}-[{1}-{2}]-{3}-{4}-{5}-{6}-END", this._interfaceId, PartNumber, RevNumber, this._opnID.ToString(), PartSerialNumber, STDATE, STTIME);
+
+											Logger.WriteDebugLog(string.Format("Updating Data string : {0}", DataString));
+											//DatabaseAccess.ProcessDataString(DataString, out Output);											
+											string tempString = DatabaseAccess.GetStatus28Type(DataString.Trim());
+											//DatabaseAccess.ProcessDataString(DataString, out Output);
+											if (!string.IsNullOrEmpty(tempString))
+											{
+												string DataToWrite = PartNumber + "," + PartSerialNumber + "," + tempString.ToString() + ","
+														+ DateTime.Now.ToString("yyyyMMddHHmmss");
+
+												ACKFilePath = Path.Combine(this._ackFolderPath, string.Format("ACK_{0}_{1}_{2}.csv", this._machineId, PartNumber, DateTime.Now.ToString("yyyyMMddHHmmss")));
+
+												WriteToACKFile(ACKFilePath, DataToWrite);
+												File.Move(REQsourceFile, REQDestFile);
+											}
+										}
+									}
+									else
+									{
+										Logger.WriteDebugLog(string.Format("REQ file is not available in this path : {0}", this._reqFolderPath));
+									}
+								}
+
+								var RESdirectory = new DirectoryInfo(this._resFolderPath);
+								var AllRESFiles = RESdirectory.GetFiles();
+								foreach (FileInfo f in AllRESFiles)
+								{
+									if (f.Name.StartsWith("RES", StringComparison.InvariantCultureIgnoreCase))
+									{
+										RESsourceFile = Path.Combine(UnprocessedFilePath, Path.GetFileNameWithoutExtension(f.Name) + Path.GetExtension(f.Name));
+										File.Move(f.FullName, RESsourceFile);
+										RESDestFile = Path.Combine(ProcessedFilePath, Path.GetFileNameWithoutExtension(f.Name) + Path.GetExtension(f.Name));
+									}
+
+									if (File.Exists(RESsourceFile))
+									{
+										RESData = File.ReadAllText(RESsourceFile); //RES data: partno-revno-partname-suppliercode-partslNoheatcode,Sttime,Endtime,Result
+										if (!string.IsNullOrEmpty(RESData))
+										{
+											DateTime Sttime = DateTime.MinValue;
+											DateTime Endtime = DateTime.MinValue;
+
+											string[] spl1 = RESData.Split(new string[] { "," }, StringSplitOptions.None);
+											string[] BARCODEStringArr = spl1[0].Split(new string[] { "-" }, StringSplitOptions.None);
+											Comp = BARCODEStringArr[0] + "-" + BARCODEStringArr[1];
+											SupplierCode = BARCODEStringArr[3];
+											PartSerialNumber = BARCODEStringArr[4];
+											HeatCode = BARCODEStringArr[5];
+
+											DateTime.TryParseExact(spl1[1], "yyyyMMddHHmmss", enUS, DateTimeStyles.None, out Sttime);
+											DateTime.TryParseExact(spl1[2], "yyyyMMddHHmmss", enUS, DateTimeStyles.None, out Endtime);
+											string Result = spl1[3];
+
+											Logger.WriteDebugLog(string.Format("Inserting Data into Raw Data.....MachineID : {0}, Comp : {1}, OPN : {2},Sttime: {3}, Endtime : {4}, HeatCode : {5}, Result : {6} ", this._machineId, Comp, this._opnID, Sttime.ToString(), Endtime.ToString(), HeatCode, Result));
+
+											DatabaseAccess.InsertToRawdata(this._interfaceId, this._ipAddress, Comp, this._opnID, Sttime, Endtime, SupplierCode, PartSerialNumber, HeatCode, Result);
+
+
+											File.Move(RESsourceFile, RESDestFile);
+											Logger.WriteDebugLog("Files are moved to Processed folder successfully.");
+										}
+									}
+									else
+									{
+										Logger.WriteDebugLog(string.Format("RES file is not available in this path : {0}", this._resFolderPath));
+									}
+								}
+
+								
+
+								var SPCdirectory = new DirectoryInfo(this._spcFolderPath);
+								var AllSPCFiles = SPCdirectory.GetFiles();
+								foreach (FileInfo f in AllSPCFiles)
+								{
+									if (f.FullName.StartsWith("SPC", StringComparison.InvariantCultureIgnoreCase))
+									{
+										SPCsourceFile = Path.Combine(UnprocessedFilePath, Path.GetFileNameWithoutExtension(f.Name) + Path.GetExtension(f.Name));
+										File.Move(f.FullName, SPCsourceFile);
+										SPCDestFile = Path.Combine(ProcessedFilePath, Path.GetFileNameWithoutExtension(f.Name) + Path.GetExtension(f.Name));
+									}
+
+									if (File.Exists(SPCsourceFile))
+									{
+										UpdateSPCAutoData(SPCsourceFile, SPCDestFile, this._machineId, this._opnID);
+									}
+									else
+									{
+										Logger.WriteDebugLog(string.Format("SPC file is not available in this path : {0}", this._spcFolderPath));
+									}
+								}
+								
+							}
+							catch (Exception ex)
+							{
+								Logger.WriteErrorLog(ex.ToString());
+							}
+						}
+						#endregion
+
+						#region "MPI"
+						if (_machineDTO.Process.Equals("MPI", StringComparison.OrdinalIgnoreCase))
+						{
+							string REQsourceFile = string.Empty;
+							string ACKFilePath = string.Empty;
+							string RESsourceFile = string.Empty;
+							string REQDestFile = string.Empty;
+							string RESDestFile = string.Empty;
+							string REQData = string.Empty;
+							string RESData = string.Empty;
+							string PartNumber = string.Empty;
+							string PartSerialNumber = string.Empty;
+							string SupplierCode = string.Empty;
+							string HeatCode = string.Empty;
+							string RevNumber = string.Empty;
+							string DataString = string.Empty;
+							string Comp = string.Empty;
+							string STDATE = DateTime.Now.ToString("yyyyMMdd");
+							string STTIME = DateTime.Now.ToString("HHmmss");
+							int Output = -1;
+
+							Logger.WriteDebugLog("Reading MPI data.....");
+							try
+							{
+								var REQdirectory = new DirectoryInfo(this._reqFolderPath);
+								var AllREQFiles = REQdirectory.GetFiles();
+								foreach (FileInfo f in AllREQFiles)
+								{
+									if (f.Name.StartsWith("REQ", StringComparison.InvariantCultureIgnoreCase))
+									{
+										REQsourceFile = Path.Combine(UnprocessedFilePath, Path.GetFileNameWithoutExtension(f.Name) + Path.GetExtension(f.Name));
+										File.Move(f.FullName, REQsourceFile);
+										REQDestFile = Path.Combine(ProcessedFilePath, Path.GetFileNameWithoutExtension(f.Name) + Path.GetExtension(f.Name));
+									}
+
+									if (File.Exists(REQsourceFile))
+									{
+										REQData = File.ReadAllText(REQsourceFile); //REQData : partno-revno-partname-suppliercode-partslNo-heatcode
+										if (!string.IsNullOrEmpty(REQData))
+										{
+											Logger.WriteDebugLog(string.Format("Data from REQ file : {0}", REQData));
+											string[] spl = REQData.Split(new string[] { "-" }, StringSplitOptions.None);
+
+											PartNumber = spl[0];
+											RevNumber = spl[1];
+											PartSerialNumber = spl[4];
+											//TODO - take STDATE, STTIME from csv file
+											DataString = string.Format("START-28-{0}-[{1}-{2}]-{3}-{4}-{5}-{6}-END", this._machineId, PartNumber, RevNumber, this._opnID.ToString(), PartSerialNumber, STDATE, STTIME);
+
+											Logger.WriteDebugLog(string.Format("Updating Data string : {0}", DataString));
+											string tempString = DatabaseAccess.GetStatus28Type(DataString.Trim());
+											if (!string.IsNullOrEmpty( tempString))
+											{
+												string DataToWrite = PartNumber + "," + PartSerialNumber + "," + tempString.ToString() + ","
+														+ DateTime.Now.ToString("yyyyMMddHHmmss");
+
+												ACKFilePath = Path.Combine(this._ackFolderPath, string.Format("ACK_{0}_{1}_{2}.csv", this._machineId, PartNumber, DateTime.Now.ToString("yyyyMMddHHmmss")));
+
+												WriteToACKFile(ACKFilePath, DataToWrite);
+												File.Move(REQsourceFile, REQDestFile);
+											}
+										}
+									}
+									else
+									{
+										Logger.WriteDebugLog(string.Format("REQ File is not available in this path : {0}", this._reqFolderPath));
+									}
+								}
+
+								//TODO - process response file as per file "MPI Integration.pdf" or "Shanti-Iron-Pending-Items-29-may-20202.docx"
+
+								var RESdirectory = new DirectoryInfo(this._resFolderPath);
+								var AllRESFiles = RESdirectory.GetFiles();
+								foreach (FileInfo f in AllRESFiles)
+								{
+									if (f.Name.StartsWith("RES", StringComparison.InvariantCultureIgnoreCase))
+									{
+										RESsourceFile = Path.Combine(UnprocessedFilePath, Path.GetFileNameWithoutExtension(f.Name) + Path.GetExtension(f.Name));
+										File.Move(f.FullName, RESsourceFile);
+										RESDestFile = Path.Combine(ProcessedFilePath, Path.GetFileNameWithoutExtension(f.Name) + Path.GetExtension(f.Name));
+									}
+
+									if (File.Exists(RESsourceFile))
+									{
+										RESData = File.ReadAllText(RESsourceFile);
+										//RES data: InspectorID,PartName,PartNo, Part Serial No, Heat Code Number, Inspection Start DateTime, Inspection End DateTime, CameraInsp Result, Camera Pic Link, Manual Insp Result, De-Mag Leval, Remarks
+										if (!string.IsNullOrEmpty(RESData))
+										{
+											DateTime Sttime = DateTime.MinValue;
+											DateTime Endtime = DateTime.MinValue;
+
+											string[] spl1 = RESData.Split(new string[] { "," }, StringSplitOptions.None);
+											string[] BARCODEStringArr = spl1[0].Split(new string[] { "-" }, StringSplitOptions.None);
+											Comp = BARCODEStringArr[0] + "-" + BARCODEStringArr[1];
+											SupplierCode = BARCODEStringArr[3];
+											PartSerialNumber = BARCODEStringArr[4];
+											HeatCode = BARCODEStringArr[5];
+
+											DateTime.TryParseExact(spl1[1], "yyyyMMddHHmmss", enUS, DateTimeStyles.None, out Sttime);
+											DateTime.TryParseExact(spl1[2], "yyyyMMddHHmmss", enUS, DateTimeStyles.None, out Endtime);
+											string Result = spl1[3];
+
+											Logger.WriteDebugLog(string.Format("Inserting Data into Raw Data.....MachineID : {0}, Comp : {1}, OPN : {2},Sttime: {3}, Endtime : {4}, HeatCode : {5}, Result : {6} ", this._interfaceId, Comp, this._opnID, Sttime.ToString(), Endtime.ToString(), HeatCode, Result));
+
+											//TODO - insert to some other table also??
+											//TODO - In rawdata we need to insert “MPI” in groupid column??
+											DatabaseAccess.InsertToRawdata(this._interfaceId, this._ipAddress, Comp, this._opnID, Sttime, Endtime, SupplierCode, PartSerialNumber, HeatCode, Result);
+
+
+											File.Move(RESsourceFile, RESDestFile);
+											Logger.WriteDebugLog("Files are moved to Processed folder successfully.");
+										}
+									}
+									else
+									{
+										Logger.WriteDebugLog(string.Format("RES File is not available in this path : {0}", this._resFolderPath));
+									}
+								}
+
+								
+							}
+							catch (Exception ex)
+							{
+								Logger.WriteErrorLog(ex.ToString());
+							}
+						}
+						#endregion
+					}
+					#endregion
+
+					#region "Profinet"
+					if (_protocol.Equals("profinet", StringComparison.OrdinalIgnoreCase))
+					{
+						Logger.WriteDebugLog("Entered into PROFINET Protocol");
+						int DBNumber = this._portNo;
+						#region "Leak test machine"
+						if (_machineDTO.Process.Equals("Leak Test machine", StringComparison.OrdinalIgnoreCase))
+						{
+							if (CheckPingStatus(this._ipAddress))
+							{
+								LeakTestClient = new Plc(CpuType.S71200, this._ipAddress, 0, 1);								
+								string PlantID = string.Empty;
+								string MachineID = string.Empty;
+								int OPN = 0;
+								int ReadBARCODE = 0;
+								string BARCODEData = string.Empty;
+								string BARCODEReadDate = string.Empty;
+								string BARCODEReadTime = string.Empty;
+								string PartNumber = string.Empty;
+								string SupplierCode = string.Empty;
+								string PartSerialNumber = string.Empty;
+								string HeatCode = string.Empty;
+								string RevNumber = string.Empty;
+								string Comp = string.Empty;
+								int Output = -1;
+								int ReadCycleEnd = 0;
+								string CycleStartDate = string.Empty;
+								string CycleStartTime = string.Empty;
+								string CycleEndDate = string.Empty;
+								string CycleEndTime = string.Empty;
+								DateTime CycleStartDatetime = DateTime.MinValue;
+								DateTime CycleEndDatetime = DateTime.MinValue;
+								int Result = -1;
+								double Parameter1 = 0;
+								double Parameter2 = 0;
+
+								Logger.WriteDebugLog("Reading Leak Test machine data.....");
+								try
+								{
+									if (LeakTestClient.IsAvailable)
+									{
+										if (LeakTestClient.IsConnected == false)
+										{
+											ErrorCode erc = LeakTestClient.Open();
+											if (erc != ErrorCode.NoError)
+											{
+												Logger.WriteErrorLog(string.Format("Not able to connect to PLC. Error = {0}", LeakTestClient.LastErrorString));
+												LeakTestClient.ClearLastError();
+												return;
+											}
+										}
+									}
+									else
+									{
+										Logger.WriteDebugLog(string.Format("Not able to connect to the device. Please check the PLC IP address {0} and Ping status.", this._ipAddress));
+										return;
+									}
+																		
+									ReadBARCODE = Convert.ToInt32(LeakTestClient.Read(string.Format("DB{0}.DBB45", DBNumber)));
+									if (ReadBARCODE == 1)
+									{
+										PlantID = LeakTestClient.Read(DataType.DataBlock, DBNumber, 0 + 2, VarType.String, 20).ToString().
+										Trim(new char[] { char.MinValue, ' ' });
+										MachineID = LeakTestClient.Read(DataType.DataBlock, DBNumber, 22 + 2, VarType.String, 20).ToString().
+											Trim(new char[] { char.MinValue, ' ' });
+										OPN = Convert.ToInt32(LeakTestClient.Read(string.Format("DB{0}.DBB44", DBNumber)));
+										BARCODEData = LeakTestClient.Read(DataType.DataBlock, DBNumber, 46 + 2, VarType.String, 60).ToString().
+										Trim(new char[] { char.MinValue, ' ' });
+
+										if (!string.IsNullOrEmpty(BARCODEData))
+										{
+											Logger.WriteDebugLog(string.Format("BARCODE string : {0}", BARCODEData));
+											BARCODEReadDate = Convert.ToString(LeakTestClient.Read(string.Format("DB{0}.DBD108", DBNumber)));
+											BARCODEReadTime = Convert.ToString(LeakTestClient.Read(string.Format("DB{0}.DBD112", DBNumber)));
+											LeakTestClient.Write(string.Format("DB{0}.DBB45", DBNumber), (byte)0);
+
+											string[] spl = BARCODEData.Split(new string[] { "-" }, StringSplitOptions.None);
+											PartNumber = spl[0];
+											PartSerialNumber = spl[4];
+											HeatCode = spl[5];
+											RevNumber = spl[1];
+											Comp = PartNumber+"-"+RevNumber;
+											SupplierCode = spl[3];
+
+											string DataString = string.Format("START-28-{0}-[{1}-{2}]-{3}-{4}-{5}-{6}-END", MachineID, PartNumber, RevNumber, OPN.ToString(), PartSerialNumber, BARCODEReadDate, BARCODEReadTime);
+
+											Logger.WriteDebugLog(string.Format("Processing Data string : {0}", DataString));
+
+											//TODO - check te db method
+											var result = DatabaseAccess.GetStatus28Type(DataString);
+											
+											if (!string.IsNullOrEmpty(result))
+											{
+												LeakTestClient.Write(string.Format("DB{0}.DBB116", DBNumber), (byte)Output);
+												
+											}
+										}
+
+										ReadCycleEnd = Convert.ToInt32(LeakTestClient.Read(string.Format("DB{0}.DBB118", DBNumber)));
+										if (ReadCycleEnd == 1)
+										{
+											CycleStartDate = Convert.ToString(LeakTestClient.Read(string.Format("DB{0}.DBD120", DBNumber)));
+											CycleStartTime = Convert.ToString(LeakTestClient.Read(string.Format("DB{0}.DBD124", DBNumber)));
+											DateTime.TryParseExact(CycleStartDate + " " + CycleStartTime, "yyyyMMdd HHmmss", CultureInfo.InvariantCulture, DateTimeStyles.None, out CycleStartDatetime);
+
+											CycleEndDate = Convert.ToString(LeakTestClient.Read(string.Format("DB{0}.DBD128", DBNumber)));
+											CycleEndTime = Convert.ToString(LeakTestClient.Read(string.Format("DB{0}.DBD132", DBNumber)));
+											DateTime.TryParseExact(CycleEndDate + " " + CycleEndTime, "yyyyMMdd HHmmss", CultureInfo.InvariantCulture, DateTimeStyles.None, out CycleEndDatetime);
+
+											Result = Convert.ToInt32(LeakTestClient.Read(string.Format("DB{0}.DBB119", DBNumber)));
+											Parameter1 = Convert.ToDouble(LeakTestClient.Read(string.Format("DB{0}.DBD136", DBNumber)));
+											Parameter2 = Convert.ToDouble(LeakTestClient.Read(string.Format("DB{0}.DBD140", DBNumber)));
+											double[] Parameters = new double[] { Parameter1, Parameter2 };
+											LeakTestClient.Write(string.Format("DB{0}.DBB118", DBNumber), (byte)0);
+
+											//TODO - build string and call proc
+											
+											Logger.WriteDebugLog(string.Format("Inserting Data into Raw Data.....MachineID : {0}, Comp : {1}, OPN : {2}, Sttime: {3}, Endtime : {4}, HeatCode : {5}, Result : {6}, IP : {7}", MachineID, Comp, OPN, CycleStartDatetime.ToString(), CycleEndDatetime.ToString(), HeatCode, Result, this._ipAddress));
+																						
+											DatabaseAccess.InsertToRawdata(MachineID, this._ipAddress, Comp, OPN, CycleStartDatetime, CycleEndDatetime, SupplierCode, PartSerialNumber, HeatCode, Result.ToString());
+											//TODO - If the Result is NotOK then create entry in Autodatarejections table
+
+											Logger.WriteDebugLog(string.Format("Inserting Parameter value into SPCAutoData.....P1 : {0}, P2 : {1}", Parameter1, Parameter2));
+
+											int i = 1;
+											foreach (double P in Parameters)
+											{
+												DatabaseAccess.InsertToSPCAutodata(MachineID, Comp, OPN, ("P" + i.ToString()), P);
+												i++;
+											}
+										}
+									}
+								}
+								catch (Exception ex)
+								{
+									Logger.WriteErrorLog(ex.ToString());
+								}
+								finally
+								{
+									if (LeakTestClient != null && LeakTestClient.IsConnected)
+									{
+										LeakTestClient.Close();
+									}
+								}
+							}
+						}
+						#endregion
+
+						#region "Washing Machine"
+						if (_machineDTO.Process.Equals("Washing machine", StringComparison.OrdinalIgnoreCase))
+						{
+							if (CheckPingStatus(this._ipAddress))
+							{
+								WashingMachineClient= new Plc(CpuType.S71200, this._ipAddress, 0, 1);
+								try
+								{
+									if (WashingMachineClient.IsAvailable)
+									{
+										if (WashingMachineClient.IsConnected == false)
+										{
+											ErrorCode erc = WashingMachineClient.Open();
+											if (erc != ErrorCode.NoError)
+											{
+												Logger.WriteErrorLog(string.Format("Not able to connect to PLC. Error = {0}", WashingMachineClient.LastErrorString));
+												WashingMachineClient.ClearLastError();
+												return;
+											}
+										}
+									}
+									else
+									{
+										Logger.WriteDebugLog(string.Format("Not able to connect to the device. Please check the PLC IP address {0} and Ping status.", this._ipAddress));
+										return;
+									}
+
+									Logger.WriteDebugLog("Reading Washing machine data.....");
+								
+
+									string process_String = string.Empty;
+									string barcode_Data = string.Empty;
+									string Part_No = string.Empty;
+									string Rev_No = string.Empty;
+									string Part_Name = string.Empty;
+									string Supplier_Code = string.Empty;
+									string Part_Sl_No = string.Empty;
+									string Heat_Code_No = string.Empty;
+									string Component = string.Empty;
+									int Output = -1;
+									DateTime CycleStartDatetime = DateTime.MinValue;
+									DateTime CycleEndDatetime = DateTime.MinValue;
+
+									byte Read_barcode = Convert.ToByte(WashingMachineClient.Read(string.Format("DB{0}.DBB{1}", DBNumber, "45")));
+									if (Read_barcode == 1)
+									{
+										string MachineID = WashingMachineClient.Read(DataType.DataBlock, DBNumber, 22 + 2, VarType.String, 20).ToString().Trim(char.MinValue).Trim();
+										int OperationID = Convert.ToInt32(WashingMachineClient.Read(string.Format("DB{0}.DBB{1}", DBNumber, "44")));
+										barcode_Data = WashingMachineClient.Read(DataType.DataBlock, DBNumber, 46 + 2, VarType.String, 60).ToString().Trim(char.MinValue).Trim();
+										if (barcode_Data.Length > 0)
+										{
+											Logger.WriteDebugLog("Barcode_Data From PLC :" + barcode_Data);
+											var data = barcode_Data.Split('-');										
+											Part_No = data[0];
+											Rev_No = data[1];
+											Part_Sl_No = data[4];
+											Heat_Code_No = data[5];
+											Component = Part_No;
+											
+											var startDate = ((uint)WashingMachineClient.Read(string.Format("DB{0}.DBD{1}", DBNumber, "108"))).ConvertToInt().ToString("00000000");
+											var startTime = ((uint)WashingMachineClient.Read(string.Format("DB{0}.DBD{1}", DBNumber, "112"))).ConvertToInt().ToString("000000");
+											WashingMachineClient.Write(string.Format("DB{0}.DBB{1}", DBNumber, "45"), (byte)0);
+
+											process_String = string.Format("START-28-{0}-[{1}-{2}]-{3}-{4}-{5}-{6}-END", MachineID, Part_No, Rev_No, OperationID.ToString(), Part_Sl_No, startDate, startTime);
+											Logger.WriteDebugLog(string.Format("Processing Data string : {0}", process_String));
+											
+											var result = DatabaseAccess.GetStatus28Type(process_String);											
+											if (!string.IsNullOrEmpty(result)) 
+											{
+												//TODO - write result to PLC
+												WashingMachineClient.Write(string.Format("DB{0}.DBB{1}", DBNumber, "116"), (byte)Output);								
+											}											
+										}
+									}
+									byte Read_CycleEndData = Convert.ToByte(WashingMachineClient.Read(string.Format("DB{0}.DBB{1}", DBNumber, "118")));
+
+									if (Read_CycleEndData == 1)
+									{
+										string MachineID = WashingMachineClient.Read(DataType.DataBlock, DBNumber, 22 + 2, VarType.String, 20).ToString().Trim(char.MinValue).Trim();
+										int OperationID = Convert.ToInt32(WashingMachineClient.Read(string.Format("DB{0}.DBB{1}", DBNumber, "44")));
+
+										int Read_result = Convert.ToInt32(WashingMachineClient.Read(string.Format("DB{0}.DBB{1}", DBNumber, "119")));
+
+										string CycleStartDate = Convert.ToString(LeakTestClient.Read(string.Format("DB{0}.DBD120", DBNumber)));
+										string CycleStartTime = Convert.ToString(LeakTestClient.Read(string.Format("DB{0}.DBD124", DBNumber)));
+										DateTime.TryParseExact(CycleStartDate + " " + CycleStartTime, "yyyyMMdd HHmmss", CultureInfo.InvariantCulture, DateTimeStyles.None, out CycleStartDatetime);
+
+										string CycleEndDate = Convert.ToString(LeakTestClient.Read(string.Format("DB{0}.DBD128", DBNumber)));
+										string CycleEndTime = Convert.ToString(LeakTestClient.Read(string.Format("DB{0}.DBD132", DBNumber)));
+										DateTime.TryParseExact(CycleEndDate + " " + CycleEndTime, "yyyyMMdd HHmmss", CultureInfo.InvariantCulture, DateTimeStyles.None, out CycleEndDatetime);
+										WashingMachineClient.Write(string.Format("DB{0}.DBB{1}", DBNumber, "118"), (byte)0);
+
+										Logger.WriteDebugLog(string.Format("Inserting Data into Raw Data.....MachineID : {0}, Comp : {1}, OPN : {2}, Sttime: {3}, Endtime : {4}, HeatCode : {5}, Result : {6}, IP : {7}", MachineID, Component, OperationID.ToString(), CycleStartDatetime.ToString(), CycleEndDatetime.ToString(), Heat_Code_No, Read_result.ToString(), this._ipAddress));
+
+										//TODO - build string for type 1 string and insert to AutoData
+										//If the Result is NotOK then create entry in Autodatarejections table
+										//DatabaseAccess.InsertToRawdata(MachineID, this._ipAddress, Component, (int)OperationID,CycleStartDatetime,CycleEndDatetime, Heat_Code_No, Read_result.ToString());		 							
+									}
+
+								}
+								catch (Exception ex)
+								{
+									Logger.WriteErrorLog(ex.ToString());
+								}
+								finally
+								{
+									if (WashingMachineClient != null && WashingMachineClient.IsConnected)
+									{
+										WashingMachineClient.Close();
+									}
+								}
+							}
+						}
+						#endregion
+
+						#region "Equator(Phantom)"
+						if (_machineDTO.Process.Equals("Equator(Phantom)", StringComparison.OrdinalIgnoreCase))
+						{
+							PhantomClient = new Plc(CpuType.S71200, this._ipAddress, 0, 1);
+							string BarcodeString = string.Empty;
+							PhantomStatus = false;
+							string sourceFile = string.Empty;
+							string UnprocessedFile_SPC = string.Empty;
+							string ProcessedFile_SPC = string.Empty;
+							StringBuilder strTxtData = new StringBuilder();
+							try
+							{
+								if (PhantomClient.IsAvailable)
+								{
+									if (PhantomClient.IsConnected == false)
+									{
+										ErrorCode erc = PhantomClient.Open();
+										if (erc != ErrorCode.NoError)
+										{
+											Logger.WriteErrorLog(string.Format("Not able to connect to PLC. Error = {0}", PhantomClient.LastErrorString));
+											PhantomClient.ClearLastError();
+											return;
+										}
+									}
+								}
+								else
+								{
+									Logger.WriteDebugLog(string.Format("Not able to connect to the device. Please check the PLC IP address {0} and Ping status.", this._ipAddress));
+									return;
+								}
+
+								var PartLoaded = (bool)PhantomClient.Read(string.Format("DB{0}.DBX62.0", DBNumber));
+								if (PartLoaded)
+								{
+									Logger.WriteDebugLog("Reading Data from PLC.");
+									Logger.WriteDebugLog("Data Read flag (DBX62.0) is high");
+									BarcodeString = PhantomClient.Read(DataType.DataBlock, DBNumber, 0 + 2, VarType.String, 60).ToString().Trim(new char[] { char.MinValue, ' ' });
+									PhantomClient.Write(string.Format("DB{0}.DBX62.0", DBNumber), false);
+
+									var flag = (bool)PhantomClient.Read(string.Format("DB{0}.DBX62.0", DBNumber));
+									Logger.WriteDebugLog("Flag : " + flag.ToString());
+
+									if (!string.IsNullOrEmpty(BarcodeString))
+									{
+										Logger.WriteDebugLog(string.Format("Barcode String : {0}", BarcodeString));
+										string[] spl = BarcodeString.Split(new[] { '-' }, StringSplitOptions.RemoveEmptyEntries);
+
+										//string _TagFileHeader = "Plant,Equipment Id,Part Number,Rev. Number,Part Name,Supplier Code,Part Serial Number,Heat Code,Operation,Date,Time" + Environment.NewLine;
+										//string _TagFileHeader = "Part Number_Part Serial Number" + Environment.NewLine;
+										string PartNumber = spl[0];
+										string PartSerialNumber = spl[4];
+										int count = PartNumber.Length;
+										if (count < 8)
+										{
+											for (int i = 0; i < (8 - count); i++)
+											{
+												PartNumber = PartNumber + " ";
+											}
+										}
+
+										string _Values = (PartNumber + "_" + PartSerialNumber) + Environment.NewLine;
+
+										//string _Values = (Plant + "," + EquipmentId + "," + spl[0] + "," + spl[1] + "," + spl[2] + "," + spl[3] + "," + spl[4]
+										//+ "," + spl[5] + "," + Operation.ToString() + "," + Date + "," + time) + Environment.NewLine;
+
+										strTxtData.Clear();
+										//strCSVData.Append(_TagFileHeader);
+										strTxtData.Append(_Values);
+										if (strTxtData.Length > 0)
+										{
+											//Logger.WriteDebugLog(string.Format("Importing data to CSV file....Plant={0}, EquipmentId={1}, PartNo.={2}, Rev.No.={3}, PartName={4}, SupplierCode={5}, SerialNo.={6}, HeatCode={7}, Operation={8}, Date={9}, Time={10}", Plant, EquipmentId,
+											//spl[0], spl[1], spl[2], spl[3], spl[4], spl[5], Operation, Date, time));
+											Logger.WriteDebugLog(string.Format("Importing data to Text file.... PartNo.={0}, SerialNo.={1}", PartNumber, PartSerialNumber));
+
+											while (!PhantomStatus)
+											{
+												SaveStringToTxtFile(strTxtData.ToString().Trim(), PartNumber, PartSerialNumber);
+											}
+										}
+									}
+								}
+								
+								var directory = new DirectoryInfo(this._spcFolderPath);
+								FileInfo SPCfile = directory.GetFiles("*.csv", SearchOption.TopDirectoryOnly).OrderBy(file => file.LastWriteTime).FirstOrDefault();
+								if (SPCfile != null)
+								{
+									sourceFile = SPCfile.FullName;
+									UnprocessedFile_SPC = Path.Combine(UnprocessedFilePath, Path.GetFileNameWithoutExtension(SPCfile.Name) + Path.GetExtension(SPCfile.Name));
+
+									ProcessedFile_SPC= Path.Combine(ProcessedFilePath, Path.GetFileNameWithoutExtension(SPCfile.Name) + Path.GetExtension(SPCfile.Name));
+
+									File.Move(sourceFile, UnprocessedFile_SPC);
+								}
+								else
+								{
+									Logger.WriteDebugLog(string.Format("SPC file is not available in this path : {0}", this._spcFolderPath));
+								}
+								if (!string.IsNullOrEmpty(UnprocessedFile_SPC))
+								{
+									UpdateSPCAutoData(UnprocessedFile_SPC, ProcessedFile_SPC, this._machineId, this._opnID);
+								}
+							}
+							catch (Exception ex)
+							{
+								Logger.WriteErrorLog(ex.ToString());
+							}
+							finally
+							{
+								if (PhantomClient != null && PhantomClient.IsConnected)
+								{
+									PhantomClient.Close();
+								}
+							}
+						}
+						#endregion
+					}
+					#endregion
+
+					#region "Modbus"
+					if (_protocol.Equals("modbus", StringComparison.OrdinalIgnoreCase))
+					{
+						Logger.WriteDebugLog("Entered into MODBUS Protocol");
+						ushort prevAckNumber = ushort.MinValue;
+						ushort prevAckNumber28Type = ushort.MinValue;
+						ModbusIpMaster master = default(ModbusIpMaster);
+						commNo = 100;
+						DateTime timeToUpdateDate = DateTime.MinValue;
+						while (true)
+						{
+							#region StopService
+							if (ServiceStop.stop_service == 1)
+							{
+								try
+								{
+									if (master != null)
+									{
+										master.Dispose();
+										master = null;
+									}
+									Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+									break;
+								}
+								catch (Exception ex)
+								{
+									Logger.WriteErrorLog(ex.Message);
+									break;
+								}
+							}
+							#endregion
+
+							//Why below condition?
+							try
+							{
+								master = ConnectModBus();
+								if (master != null)
+								{
+									Handling28TypeString(ref master, HoldingRegister28TypeString, BytesToRead28Type, ref prevAckNumber28Type);
+									WriteParametersToPLC(ref master);
+									HandlingType7String(ref master, ref prevAckNumber);
+									HandlingType_6_7String(ref master, ref prevAckNumber);
+									InvokeDailyCheckListActivity(ref master);
+									InvokePreventiveMaintenanceActivity(ref master);
+									HandingProcessParameter_String(ref master);
+								}
+								else
+								{
+									Logger.WriteDebugLog("Disconnected from network (No ping).");
+									Thread.Sleep(1000);
+								}
+							}
+							catch (Exception ex)
+							{
+								Logger.WriteErrorLog(ex.ToString());
+							}
+							finally
+							{
+
+								if (master != null)
+								{
+									master.Dispose();
+								}
+
+								master = null;
+							}
+							Thread.Sleep(1500);
+						}
+					}
+					#endregion
+				}
+				catch (Exception ex)
+				{
+					Logger.WriteErrorLog("Exception from main while loop : " + ex.ToString());
+					Thread.Sleep(2000);
+				}
+			}
+			Logger.WriteDebugLog("End of while loop." + Environment.NewLine + "------------------------------------------");
+		}
+
+        private string getValidationResult(string validationResult)
+        {
+            string result = "0";
+            // '<' + @SlNo + '-' + @component + '@' + @PrevOpnFromAutodata + '#' + '4>' --(Rejection)
+            //split the string and get the result
+            if(validationResult.Contains("#"))
+            {
+                var strs = validationResult.Split(new char[] {'<','>','@','#'}, StringSplitOptions.RemoveEmptyEntries);
+                result = strs[strs.Length-1].Trim();
+            }
+            return result == "1" ? "1" : "2";
+        }
+
+        private void UpdateSPCAutoData(string SPCsourceFile, string SPCDestFile, string _machineId, int _opnID)
+		{
+			try
+			{
+				string[] spcData = File.ReadAllLines(SPCsourceFile);
+				DateTime updatedts = DateTime.MinValue;
+				foreach (string data in spcData)
+				{
+					string[] spl = data.Split(',');
+
+					DateTime.TryParseExact(spl[2] + " " + spl[3], @"dd/MM//yyyy HH:mm:ss", enUS, DateTimeStyles.None, out updatedts);
+					string partno = spl[4];
+					string partSlno = spl[5];
+					string Characteristics = spl[6];
+					double actualValue = Convert.ToDouble(spl[7]);
+					double nominalValue = Convert.ToDouble(spl[8]);
+					double USL = Convert.ToDouble(spl[9]);
+					double LSL = Convert.ToDouble(spl[10]);
+
+					DatabaseAccess.InsertToSPCAutodata(this._machineId, partno, this._opnID, Characteristics, actualValue);
+				}
+
+				File.Move(SPCsourceFile, SPCDestFile);
+				Logger.WriteDebugLog("SPC file is moved to Processed folder successfully.");
+			}
+			catch (Exception ex)
+			{
+				Logger.WriteErrorLog(ex.ToString());
+			}			
+		}
+
+		private void SaveStringToTxtFile(string strTxtData, string PartNumber, string PartSerialNumber)
+		{
+			StreamWriter writer = default(StreamWriter);
+			string sourceFile = string.Empty;
+			string TxtFilePathName = ConfigurationManager.AppSettings["TxtFilePathName"];
+			try
+			{
+				if (TxtFilePathName != null)
+				{
+					writer = new StreamWriter(TxtFilePathName, false);
+					writer.Write(strTxtData);
+					writer.Flush();
+					PhantomStatus = true;
+					Logger.WriteDebugLog("Data imported to Text file successfully.");
+				}
+			}
+			catch (Exception ex)
+			{
+				Logger.WriteErrorLog(ex.ToString());
+			}
+			finally
+			{
+				if (writer != null)
+				{
+					writer.Close();
+					writer.Dispose();
+				}
+			}
+		}
+
+		private void Handling28TypeString(ref ModbusIpMaster master, ushort HoldingRegister28TypeString, ushort BytesToRead28Type, ref ushort prevAckNumber28Type)
+		{
+			ushort[] output = null;
+			ushort ackNumber = ushort.MinValue;
+			string outputString = string.Empty;
+			string messageID = string.Empty;
+			string CompID = string.Empty;
+			bool isException = false;
+			int count = 0;
+			while (isException || count == 0)
+			{
+
+				#region StopService
+				if (ServiceStop.stop_service == 1)
+				{
+					try
+					{
+						if (master != null)
+						{
+							master.Dispose();
+							master = null;
+						}
+
+						Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+						break;
+					}
+					catch (Exception ex)
+					{
+						Logger.WriteErrorLog(ex.Message);
+						break;
+					}
+				}
+				#endregion
+
+				count++;
+				if (count > 4)
+				{
+					break;
+				}
+				if (isException)
+				{
+					master = ConnectModBus();
+				}
+				if (master == null)
+				{
+					isException = true;
+					continue;
+				}
+				else
+				{
+					isException = false;
+				}
+				output = null;
+
+				try
+				{
+					output = master.ReadHoldingRegisters(HoldingRegister28TypeString, BytesToRead28Type);
+					// Logger.WriteDebugLog("Type 28 string reading is successfull.");
+				}
+				catch (Exception ex)
+				{
+					isException = true;
+					if (master != null) master.Dispose();
+					Logger.WriteErrorLog(ex.ToString());
+					continue;
+				}
+				outputString = string.Empty;
+				outputString = GetString(output).Trim(char.MinValue);//.TrimEnd(new char[] { '0' })
+				if (outputString != null && outputString.Length > 0)
+				{
+					SaveStringToTPMFile(outputString);
+					Logger.WriteDebugLog(string.Format("String recieved : {0}", outputString));
+
+                    //Process Parameter - Done by Prince
+                    
+                }
+				if (outputString != null && outputString.Length >= 4)
+				{
+					messageID = string.Empty;
+					messageID = outputString.Substring(0, 4);
+					//send ack back
+					ackNumber = ushort.MinValue;
+					ushort.TryParse(messageID, out ackNumber);
+
+					//Do we need to pass prevAckNumber28Type as ref??
+					//if (prevAckNumber28Type != ackNumber)
+					//{
+					//Why to insert 2 times same string???
+					//Can we write below line after sending ack or insert to database??
+					try
+					{
+						master.WriteSingleRegister(AckAddressFor28TypeString, ackNumber);
+						Logger.WriteDebugLog(string.Format("Ack {0} send for string {1}", messageID, outputString));
+					}
+					catch (Exception ex)
+					{
+						isException = true;
+						if (master != null) master.Dispose();
+						Logger.WriteErrorLog(ex.ToString());
+						continue;
+					}
+					//}
+					//------------------------------------------Sending Response--------------------------------------------------------//    
+					//Why to insert 2 times same string???
+					string tempString = DatabaseAccess.GetStatus28Type(outputString.Trim());
+					prevAckNumber28Type = ackNumber;
+					Logger.WriteDebugLog("Status for 28 type string updation started. ");
+					string tempStatus = "0005" + tempString;      //GetStatusOF28Type(outputString);
+					ushort[] tempStatusUshort = GetuShort("0004CMPSTSBEGIN");
+					int retry = 0;
+					do
+					{
+						#region StopService
+						if (ServiceStop.stop_service == 1)
+						{
+							try
+							{
+								if (master != null)
+								{
+									master.Dispose();
+									master = null;
+								}
+
+								Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+								break;
+							}
+							catch (Exception ex)
+							{
+
+								Logger.WriteErrorLog(ex.Message);
+								break;
+							}
+						}
+						#endregion
+						if (retry > 0)
+						{
+							Thread.Sleep(4000);
+						}
+						retry++;
+						if (retry == 4)
+						{
+							Logger.WriteDebugLog("software retried thrice to write 0004CMPSTSBEGIN");
+							break;
+						}
+
+						try
+						{
+							master.WriteMultipleRegisters(0, HoldingRegisterDateAndStatus, tempStatusUshort);
+							Logger.WriteDebugLog(string.Format("{0} sent from computer.", "0004CMPSTSBEGIN"));
+							Thread.Sleep(1000);
+						}
+						catch (Exception ex)
+						{
+							isException = true;
+							if (master != null) master.Dispose();
+							Logger.WriteErrorLog(ex.ToString());
+							master = ConnectModBus();
+							continue;
+						}
+					} while (isException);
+
+					retry = 0;
+					//read Ack number 0004                    
+					do
+					{
+						#region StopService
+						if (ServiceStop.stop_service == 1)
+						{
+							try
+							{
+								if (master != null)
+								{
+									master.Dispose();
+									master = null;
+								}
+
+								Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+								break;
+							}
+							catch (Exception ex)
+							{
+
+								Logger.WriteErrorLog(ex.Message);
+								break;
+							}
+						}
+						#endregion
+						if (retry > 0)
+						{
+							Thread.Sleep(4000);
+						}
+						retry++;
+						if (retry == 4)
+						{
+							Logger.WriteDebugLog("software retried thrice to get ack 0004");
+							break;
+						}
+						try
+						{
+							output = master.ReadHoldingRegisters(DateAndStatusAckAddress, numberOfBytesToRead);
+							Thread.Sleep(1000);
+						}
+						catch (Exception ex)
+						{
+							isException = true;
+							if (master != null) master.Dispose();
+							Logger.WriteErrorLog(ex.ToString());
+							master = ConnectModBus();
+							continue;
+						}
+						outputString = GetString(output).Trim(char.MinValue);//.TrimEnd(new char[] { '0' })
+						Logger.WriteDebugLog(string.Format("Ack {0} recieved from machine.", outputString));
+
+					} while (outputString != "0004");
+					if (outputString == "0004")
+					{
+						//sending data
+						tempStatusUshort = null;
+						tempStatusUshort = GetuShort(tempStatus);
+
+						retry = 0;
+
+						do
+						{
+							#region StopService
+							if (ServiceStop.stop_service == 1)
+							{
+								try
+								{
+									if (master != null)
+									{
+										master.Dispose();
+										master = null;
+									}
+
+									Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+									break;
+								}
+								catch (Exception ex)
+								{
+
+									Logger.WriteErrorLog(ex.Message);
+									break;
+								}
+							}
+							#endregion
+							if (retry > 0)
+							{
+								Thread.Sleep(4000);
+							}
+							retry++;
+							if (retry == 4)
+							{
+								Logger.WriteDebugLog("software retried thrice to write " + tempStatus);
+								break;
+							}
+
+							try
+							{
+								master.WriteMultipleRegisters(0, HoldingRegisterDateAndStatus, tempStatusUshort);
+								Logger.WriteDebugLog(string.Format("{0} sent from computer.", tempStatus));
+								isException = false;
+								Thread.Sleep(1000);
+							}
+							catch (Exception ex)
+							{
+								isException = true;
+								if (master != null) master.Dispose();
+								Logger.WriteErrorLog(ex.ToString());
+								master = ConnectModBus();
+								continue;
+							}
+						} while (isException);
+
+						//read Ack number 0005
+						retry = 0;
+						do
+						{
+							#region StopService
+							if (ServiceStop.stop_service == 1)
+							{
+								try
+								{
+									if (master != null)
+									{
+										master.Dispose();
+										master = null;
+									}
+
+									Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+									break;
+								}
+								catch (Exception ex)
+								{
+									Logger.WriteErrorLog(ex.Message);
+									break;
+								}
+							}
+							#endregion
+							if (retry > 0)
+							{
+								Thread.Sleep(4000);
+							}
+							retry++;
+							if (retry == 4)
+							{
+								Logger.WriteDebugLog("software tried thrice to get ack 0005");
+								break;
+							}
+							try
+							{
+								output = master.ReadHoldingRegisters(DateAndStatusAckAddress, numberOfBytesToRead);
+								Thread.Sleep(1000);
+							}
+							catch (Exception ex)
+							{
+								isException = true;
+								if (master != null) master.Dispose();
+								Logger.WriteErrorLog(ex.ToString());
+								master = ConnectModBus();
+								continue;
+							}
+							outputString = GetString(output).Trim(char.MinValue);//.TrimEnd(new char[] { '0' })
+							Logger.WriteDebugLog(string.Format("Ack {0} recieved from machine.", outputString));
+						} while (outputString != "0005");
+						if (outputString == "0005")
+						{
+							Thread.Sleep(1000);
+							tempStatusUshort = null;
+							//sending END header
+							tempStatusUshort = GetuShort("0006CMPSTSEND");
+							retry = 0;
+							do
+							{
+								#region StopService
+								if (ServiceStop.stop_service == 1)
+								{
+									try
+									{
+										if (master != null)
+										{
+											master.Dispose();
+											master = null;
+										}
+
+										Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+										break;
+									}
+									catch (Exception ex)
+									{
+										Logger.WriteErrorLog(ex.Message);
+										break;
+									}
+								}
+								#endregion
+								if (retry > 0)
+								{
+									Thread.Sleep(4000);
+								}
+								retry++;
+								if (retry == 4)
+								{
+									Logger.WriteDebugLog("software retried thrice to write 0006CMPSTSEND");
+									break;
+								}
+
+								try
+								{
+									master.WriteMultipleRegisters(0, HoldingRegisterDateAndStatus, tempStatusUshort);
+									Logger.WriteDebugLog(string.Format("{0} sent from computer.", "0006CMPSTSEND"));
+									isException = false;
+									Thread.Sleep(1000);
+								}
+								catch (Exception ex)
+								{
+									isException = true;
+									if (master != null) master.Dispose();
+									Logger.WriteErrorLog(ex.ToString());
+									master = ConnectModBus();
+									continue;
+								}
+							} while (isException);
+							//read Ack number 0006
+							retry = 0;
+							do
+							{
+								#region StopService
+								if (ServiceStop.stop_service == 1)
+								{
+									try
+									{
+										if (master != null)
+										{
+											master.Dispose();
+											master = null;
+										}
+
+										Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+										break;
+									}
+									catch (Exception ex)
+									{
+										Logger.WriteErrorLog(ex.Message);
+										break;
+									}
+								}
+								#endregion
+								if (retry > 0)
+								{
+									Thread.Sleep(4000);
+								}
+								retry++;
+								if (retry == 4)
+								{
+									Logger.WriteDebugLog("software retried thrice to get ack 0006");
+									break;
+								}
+								try
+								{
+									output = master.ReadHoldingRegisters(DateAndStatusAckAddress, numberOfBytesToRead);
+									Thread.Sleep(1000);
+								}
+								catch (Exception ex)
+								{
+									isException = true;
+									if (master != null) master.Dispose();
+									Logger.WriteErrorLog(ex.ToString());
+									master = ConnectModBus();
+									continue;
+								}
+								outputString = GetString(output).Trim(char.MinValue);//.TrimEnd(new char[] { '0' })
+								Logger.WriteDebugLog(string.Format("Ack {0} recieved from machine.", outputString));
+
+							} while (outputString != "0006");
+							if (outputString == "0006")
+							{
+								Logger.WriteDebugLog(tempStatus + " . Status sent successfull to PLC.");
+							}
+							else
+							{
+								Logger.WriteDebugLog("Not able to get ack for 0006CMPSTSEND");
+							}
+						}
+						else
+						{
+							Logger.WriteDebugLog("Not able to get ack for " + tempStatus);
+						}
+					}
+					else
+					{
+						Logger.WriteDebugLog("Not able to get ack for 0004CMPSTSBEGIN");
+					}
+					// code to update status based upon procedure output.
+				}
+
+				#region Communication
+				//send communicationNo
+				try
+				{
+					master.WriteSingleRegister(HoldingRegisterForCommunictaion, commNo);
+				}
+				catch (Exception ex)
+				{
+					isException = true;
+					if (master != null) master.Dispose();
+					Logger.WriteErrorLog(ex.ToString());
+					continue;
+				}
+				if (commNo == 100)
+				{
+					commNo = 200;
+				}
+				else commNo = 100;
+
+				#endregion
+			}
+		}
+
+		private void HandlingType7String(ref ModbusIpMaster master, ref ushort prevAckNumber)
+		{
+			ushort[] output = null;
+			string outputString = string.Empty;
+			ushort ackNumber = 0;
+			ushort[] currentDate = null;
+			string tempDatenStatus = string.Empty;
+			string messageID = string.Empty;
+			#region Datacollection
+			bool isException = false;
+			int count = 0;
+			while (isException || count == 0)
+			{
+				#region StopService
+				if (ServiceStop.stop_service == 1)
+				{
+					try
+					{
+						if (master != null)
+						{
+							master.Dispose();
+							master = null;
+						}
+
+						Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+						break;
+					}
+					catch (Exception ex)
+					{
+						Logger.WriteErrorLog(ex.Message);
+						break;
+					}
+				}
+				#endregion
+				count++;
+				if (count > 4)
+				{
+					break;
+				}
+				if (isException)
+				{
+					master = ConnectModBus();
+				}
+				if (master == null)
+				{
+					isException = true;
+					continue;
+				}
+				else
+				{
+					isException = false;
+				}
+				try
+				{
+					output = master.ReadHoldingRegisters(holdingRegisterStartAddress, numberOfBytesToRead);
+					//Logger.WriteDebugLog("Reading tpm trak strings successfully.");
+				}
+				catch (Exception ex)
+				{
+					isException = true;
+					if (master != null) master.Dispose();
+					Logger.WriteErrorLog(ex.ToString());
+					continue;
+				}
+				outputString = GetString(output).Trim(char.MinValue);//.TrimEnd(new char[] { '0' });
+
+				if (outputString != null && outputString.Length > 0)
+				{
+					SaveStringToTPMFile(outputString);
+					Logger.WriteDebugLog(string.Format("String recieved : {0}", outputString));
+				}
+				if (outputString != null && outputString.Length >= 4)
+				{
+					ackNumber = ushort.MinValue;
+					messageID = outputString.Substring(0, 4);
+					//send ack back
+					ushort.TryParse(messageID, out ackNumber);
+					//if (prevAckNumber != ackNumber)
+					// {
+					try
+					{
+						master.WriteSingleRegister(AckHoldingRegisterAddress, ackNumber);
+						prevAckNumber = ackNumber;
+						Logger.WriteDebugLog(string.Format("Ack {0} for tpm trak string type sent. - {1}", messageID, outputString));
+						//Is delay required here ??
+					}
+					catch (Exception ex)
+					{
+						isException = true;
+						if (master != null) master.Dispose();
+						Logger.WriteErrorLog(ex.ToString());
+						continue;
+					}
+					#region Type6 7 commented code
+					////What will happen if ack not received by device (prevAckNumber != ackNumber)??   
+					//if (!outputString.Contains("START-6-"))
+					if (!outputString.Contains("START-6-") || (outputString.Contains("START-6-") && outputString.Split('-')[3] == "P600"))
+					{
+						ProcessFile(outputString, this._ipAddress, this._portNo.ToString(), MName);
+					}
+					//#region  DateTime updation
+					//if (outputString.Contains("START-7-") && outputString.Split('-')[3] == "2")
+					//{
+					//    Logger.WriteDebugLog("DateTime Updation started.");
+					//    currentDate = null;
+					//    tempDatenStatus = "0001TPMDTUBEGIN";
+					//    currentDate = GetuShort(tempDatenStatus);
+					//    int retry = 0;
+
+					//    do
+					//    {
+					//        #region StopService
+					//        if (ServiceStop.stop_service == 1)
+					//        {
+					//            try
+					//            {
+					//                if (master != null)
+					//                {
+					//                    master.Dispose();
+					//                    master = null;
+					//                }
+
+					//                Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+					//                break;
+					//            }
+					//            catch (Exception ex)
+					//            {
+					//                Logger.WriteErrorLog(ex.Message);
+					//                break;
+					//            }
+					//        }
+					//        #endregion
+
+					//        if (retry > 0)
+					//        {
+					//            Thread.Sleep(4000);
+					//        }
+					//        retry++;
+					//        if (retry == 4)
+					//        {
+					//            Logger.WriteDebugLog("software retried thrice to write ack 0001TPMDTUBEGIN");
+					//            break;
+					//        }
+					//        try
+					//        {
+					//            master.WriteMultipleRegisters(0, HoldingRegisterDateAndStatus, currentDate);
+					//            Logger.WriteDebugLog(string.Format("{0} sent from computer.", tempDatenStatus));
+					//            isException = false;
+					//            Thread.Sleep(1000);
+					//        }
+					//        catch (Exception ex)
+					//        {
+					//            isException = true;
+					//            if (master != null) master.Dispose();
+					//            Logger.WriteErrorLog(ex.ToString());
+					//            master = ConnectModBus();
+					//            continue;
+					//        }
+					//    } while (isException);
+
+
+					//    retry = 0;
+					//    do
+					//    {
+					//        #region StopService
+					//        if (ServiceStop.stop_service == 1)
+					//        {
+					//            try
+					//            {
+					//                if (master != null)
+					//                {
+					//                    master.Dispose();
+					//                    master = null;
+					//                }
+
+					//                Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+					//                break;
+					//            }
+					//            catch (Exception ex)
+					//            {
+					//                Logger.WriteErrorLog(ex.Message);
+					//                break;
+					//            }
+					//        }
+					//        #endregion
+
+					//        if (retry > 0)
+					//        {
+					//            Thread.Sleep(4000);
+					//        }
+					//        retry++;
+					//        if (retry == 4)
+					//        {
+					//            Logger.WriteDebugLog("software retried thrice to get ack 0001");
+					//            break;
+					//        }
+					//        try
+					//        {
+					//            output = master.ReadHoldingRegisters(DateAndStatusAckAddress, numberOfBytesToRead);
+					//            Thread.Sleep(1000);
+
+					//        }
+					//        catch (Exception ex)
+					//        {
+					//            isException = true;
+					//            if (master != null) master.Dispose();
+					//            Logger.WriteErrorLog(ex.ToString());
+					//            master = ConnectModBus();
+					//            continue;
+					//        }
+					//        outputString = GetString(output).Trim(char.MinValue);//.TrimEnd(new char[] { '0' });
+					//        Logger.WriteDebugLog(string.Format("Ack {0} recieved from machine.", outputString));
+
+					//    } while (outputString != "0001");
+
+					//    if (outputString == "0001")
+					//    {
+					//        tempDatenStatus = DateTime.Now.ToString("yyyyMMddHHmmss");
+					//        tempDatenStatus = "0002" + tempDatenStatus;
+					//        currentDate = GetuShort(tempDatenStatus);
+					//        retry = 0;
+
+					//        do
+					//        {
+					//            #region StopService
+					//            if (ServiceStop.stop_service == 1)
+					//            {
+					//                try
+					//                {
+					//                    if (master != null)
+					//                    {
+					//                        master.Dispose();
+					//                        master = null;
+					//                    }
+
+					//                    Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+					//                    break;
+					//                }
+					//                catch (Exception ex)
+					//                {
+					//                    Logger.WriteErrorLog(ex.Message);
+					//                    break;
+					//                }
+					//            }
+					//            #endregion
+					//            if (retry > 0)
+					//            {
+					//                Thread.Sleep(4000);
+					//            }
+					//            retry++;
+					//            if (retry == 4)
+					//            {
+					//                Logger.WriteDebugLog("software retried thrice to write " + tempDatenStatus);
+					//                break;
+					//            }
+					//            try
+					//            {
+					//                master.WriteMultipleRegisters(0, HoldingRegisterDateAndStatus, currentDate);
+					//                Logger.WriteDebugLog(string.Format("{0} sent from computer.", tempDatenStatus));
+					//                isException = false;
+					//                Thread.Sleep(1000);
+					//            }
+					//            catch (Exception ex)
+					//            {
+
+					//                isException = true;
+					//                if (master != null) master.Dispose();
+					//                Logger.WriteErrorLog(ex.ToString());
+					//                master = ConnectModBus();
+					//                continue;
+					//            }
+					//        } while (isException);
+
+					//        retry = 0;
+					//        do
+					//        {
+					//            #region StopService
+					//            if (ServiceStop.stop_service == 1)
+					//            {
+					//                try
+					//                {
+					//                    if (master != null)
+					//                    {
+					//                        master.Dispose();
+					//                        master = null;
+					//                    }
+
+					//                    Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+					//                    break;
+					//                }
+					//                catch (Exception ex)
+					//                {
+					//                    Logger.WriteErrorLog(ex.Message);
+					//                    break;
+					//                }
+					//            }
+					//            #endregion
+					//            if (retry > 0)
+					//            {
+					//                Thread.Sleep(4000);
+					//            }
+					//            retry++;
+					//            if (retry == 4)
+					//            {
+					//                Logger.WriteDebugLog("software retried thrice to get ack 0002");
+					//                break;
+					//            }
+					//            try
+					//            {
+					//                output = master.ReadHoldingRegisters(DateAndStatusAckAddress, numberOfBytesToRead);
+					//                Thread.Sleep(1000);
+					//            }
+					//            catch (Exception ex)
+					//            {
+					//                isException = true;
+					//                if (master != null) master.Dispose();
+					//                Logger.WriteErrorLog(ex.ToString());
+					//                master = ConnectModBus();
+					//                continue;
+					//            }
+					//            outputString = GetString(output).Trim(char.MinValue);//.TrimEnd(new char[] { '0' })
+					//            Logger.WriteDebugLog(string.Format("Ack {0} recieved from machine.", outputString));
+
+					//        } while (outputString != "0002");
+					//        if (outputString == "0002")
+					//        {
+					//            Thread.Sleep(1000);
+					//            tempDatenStatus = "0003TPMDTUEND";
+					//            currentDate = GetuShort(tempDatenStatus);
+					//            retry = 0;
+
+					//            do
+					//            {
+					//                #region StopService
+					//                if (ServiceStop.stop_service == 1)
+					//                {
+					//                    try
+					//                    {
+					//                        if (master != null)
+					//                        {
+					//                            master.Dispose();
+					//                            master = null;
+					//                        }
+
+					//                        Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+					//                        break;
+					//                    }
+					//                    catch (Exception ex)
+					//                    {
+					//                        Logger.WriteErrorLog(ex.Message);
+					//                        break;
+					//                    }
+					//                }
+					//                #endregion
+					//                if (retry > 0)
+					//                {
+					//                    Thread.Sleep(4000);
+					//                }
+					//                retry++;
+					//                if (retry == 4)
+					//                {
+					//                    Logger.WriteDebugLog("software retried thrice to write 0003TPMDTUEND");
+					//                    break;
+					//                }
+					//                try
+					//                {
+					//                    master.WriteMultipleRegisters(0, HoldingRegisterDateAndStatus, currentDate);
+					//                    Logger.WriteDebugLog(string.Format("{0} sent from computer.", tempDatenStatus));
+					//                    isException = false;
+					//                    Thread.Sleep(1000);
+					//                }
+					//                catch (Exception ex)
+					//                {
+					//                    isException = true;
+					//                    if (master != null) master.Dispose();
+					//                    Logger.WriteErrorLog(ex.ToString());
+					//                    master = ConnectModBus();
+					//                    continue;
+					//                }
+					//            } while (isException);
+					//            retry = 0;
+					//            do
+					//            {
+					//                #region StopService
+					//                if (ServiceStop.stop_service == 1)
+					//                {
+					//                    try
+					//                    {
+					//                        if (master != null)
+					//                        {
+					//                            master.Dispose();
+					//                            master = null;
+					//                        }
+
+					//                        Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+					//                        break;
+					//                    }
+					//                    catch (Exception ex)
+					//                    {
+					//                        Logger.WriteErrorLog(ex.Message);
+					//                        break;
+					//                    }
+					//                }
+					//                #endregion
+					//                if (retry > 0)
+					//                {
+					//                    Thread.Sleep(4000);
+					//                }
+					//                retry++;
+					//                if (retry == 4)
+					//                {
+					//                    Logger.WriteDebugLog("software retried thrice to get ack 0003");
+					//                    break;
+					//                }
+					//                try
+					//                {
+					//                    output = master.ReadHoldingRegisters(DateAndStatusAckAddress, numberOfBytesToRead);
+					//                    Thread.Sleep(1000);
+					//                }
+					//                catch (Exception ex)
+					//                {
+					//                    isException = true;
+					//                    if (master != null) master.Dispose();
+					//                    Logger.WriteErrorLog(ex.ToString());
+					//                    master = ConnectModBus();
+					//                    continue;
+					//                }
+					//                outputString = GetString(output).Trim(char.MinValue);//.TrimEnd(new char[] { '0' })
+					//                Logger.WriteDebugLog(string.Format("Ack {0} recieved from machine.", outputString));
+
+					//            } while (outputString != "0003");
+					//            if (outputString == "0003")
+					//            {
+					//                Logger.WriteDebugLog("Date Time Updation Successfull");
+					//            }
+					//            else
+					//            {
+					//                Logger.WriteDebugLog("Not able to get ack for TPMDTUEND");
+					//            }
+					//        }
+					//        else
+					//        {
+					//            Logger.WriteDebugLog("Not able to get ack for CurrentDate");
+					//        }
+					//    }
+					//    else
+					//    {
+					//        Logger.WriteDebugLog("Not able to get ack for TPMDTUBEGIN");
+					//    }
+					//}
+
+					//#endregion 
+					#endregion
+
+					// }
+				}
+			}
+			#endregion
+		}
+
+		private void HandlingType_6_7String(ref ModbusIpMaster master, ref ushort prevAckNumber)
+		{
+			ushort[] output = null;
+			string outputString = string.Empty;
+			ushort ackNumber = 0;
+			ushort[] currentDate = null;
+			string tempDatenStatus = string.Empty;
+			string messageID = string.Empty;
+			#region Datacollection
+			bool isException = false;
+			int count = 0;
+			while (isException || count == 0)
+			{
+				#region StopService
+				if (ServiceStop.stop_service == 1)
+				{
+					try
+					{
+						if (master != null)
+						{
+							master.Dispose();
+							master = null;
+						}
+
+						Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+						break;
+					}
+					catch (Exception ex)
+					{
+						Logger.WriteErrorLog(ex.Message);
+						break;
+					}
+				}
+				#endregion
+				count++;
+				if (count > 4)
+				{
+					break;
+				}
+				if (isException)
+				{
+					master = ConnectModBus();
+				}
+				if (master == null)
+				{
+					isException = true;
+					continue;
+				}
+				else
+				{
+					isException = false;
+				}
+				try
+				{
+					//Change to M3 buffer
+					output = master.ReadHoldingRegisters(HoldingRegister6_7TypeString, BytesToRead6_7Type);
+					//Logger.WriteDebugLog("Reading tpm trak strings successfully.");
+				}
+				catch (Exception ex)
+				{
+					isException = true;
+					if (master != null) master.Dispose();
+					Logger.WriteErrorLog(ex.ToString());
+					continue;
+				}
+				outputString = GetString(output).Trim(char.MinValue);//.TrimEnd(new char[] { '0' });
+
+				if (outputString != null && outputString.Length > 0)
+				{
+					SaveStringToTPMFile(outputString);
+					Logger.WriteDebugLog(string.Format("String recieved : {0}", outputString));
+				}
+				if (outputString != null && outputString.Length >= 4)
+				{
+					ackNumber = ushort.MinValue;
+					messageID = outputString.Substring(0, 4);
+					//send ack back
+					ushort.TryParse(messageID, out ackNumber);
+					//if (prevAckNumber != ackNumber)
+					// {
+					try
+					{
+						master.WriteSingleRegister(AckAddressFor6_7TypeString, ackNumber);
+						prevAckNumber = ackNumber;
+						Logger.WriteDebugLog(string.Format("Ack {0} for tpm trak string type sent. - {1}", messageID, outputString));
+						//Is delay required here ??
+					}
+					catch (Exception ex)
+					{
+						isException = true;
+						if (master != null) master.Dispose();
+						Logger.WriteErrorLog(ex.ToString());
+						continue;
+					}
+					//What will happen if ack not received by device (prevAckNumber != ackNumber)??   
+					//if (!outputString.Contains("START-6-"))
+					if (!outputString.Contains("START-6-") || (outputString.Contains("START-6-") && outputString.Split('-')[3] == "P600"))
+					{
+						ProcessFile(outputString, this._ipAddress, this._portNo.ToString(), MName);
+					}
+					#region  DateTime updation
+					if (outputString.Contains("START-7-") && outputString.Split('-')[3] == "2")
+					{
+						Logger.WriteDebugLog("DateTime Updation started.");
+						currentDate = null;
+						tempDatenStatus = "0001TPMDTUBEGIN";
+						currentDate = GetuShort(tempDatenStatus);
+						int retry = 0;
+
+						do
+						{
+							#region StopService
+							if (ServiceStop.stop_service == 1)
+							{
+								try
+								{
+									if (master != null)
+									{
+										master.Dispose();
+										master = null;
+									}
+
+									Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+									break;
+								}
+								catch (Exception ex)
+								{
+									Logger.WriteErrorLog(ex.Message);
+									break;
+								}
+							}
+							#endregion
+
+							if (retry > 0)
+							{
+								Thread.Sleep(4000);
+							}
+							retry++;
+							if (retry == 4)
+							{
+								Logger.WriteDebugLog("software retried thrice to write ack 0001TPMDTUBEGIN");
+								break;
+							}
+							try
+							{
+								master.WriteMultipleRegisters(0, HoldingRegisterDateAndStatus, currentDate);
+								Logger.WriteDebugLog(string.Format("{0} sent from computer.", tempDatenStatus));
+								isException = false;
+								Thread.Sleep(1000);
+							}
+							catch (Exception ex)
+							{
+								isException = true;
+								if (master != null) master.Dispose();
+								Logger.WriteErrorLog(ex.ToString());
+								master = ConnectModBus();
+								continue;
+							}
+						} while (isException);
+
+
+						retry = 0;
+						do
+						{
+							#region StopService
+							if (ServiceStop.stop_service == 1)
+							{
+								try
+								{
+									if (master != null)
+									{
+										master.Dispose();
+										master = null;
+									}
+
+									Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+									break;
+								}
+								catch (Exception ex)
+								{
+									Logger.WriteErrorLog(ex.Message);
+									break;
+								}
+							}
+							#endregion
+
+							if (retry > 0)
+							{
+								Thread.Sleep(4000);
+							}
+							retry++;
+							if (retry == 4)
+							{
+								Logger.WriteDebugLog("software retried thrice to get ack 0001");
+								break;
+							}
+							try
+							{
+								output = master.ReadHoldingRegisters(DateAndStatusAckAddress, numberOfBytesToRead);
+								Thread.Sleep(1000);
+
+							}
+							catch (Exception ex)
+							{
+								isException = true;
+								if (master != null) master.Dispose();
+								Logger.WriteErrorLog(ex.ToString());
+								master = ConnectModBus();
+								continue;
+							}
+							outputString = GetString(output).Trim(char.MinValue);//.TrimEnd(new char[] { '0' });
+							Logger.WriteDebugLog(string.Format("Ack {0} recieved from machine.", outputString));
+
+						} while (outputString != "0001");
+
+						if (outputString == "0001")
+						{
+							tempDatenStatus = DateTime.Now.ToString("yyyyMMddHHmmss");
+							tempDatenStatus = "0002" + tempDatenStatus;
+							currentDate = GetuShort(tempDatenStatus);
+							retry = 0;
+
+							do
+							{
+								#region StopService
+								if (ServiceStop.stop_service == 1)
+								{
+									try
+									{
+										if (master != null)
+										{
+											master.Dispose();
+											master = null;
+										}
+
+										Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+										break;
+									}
+									catch (Exception ex)
+									{
+										Logger.WriteErrorLog(ex.Message);
+										break;
+									}
+								}
+								#endregion
+								if (retry > 0)
+								{
+									Thread.Sleep(4000);
+								}
+								retry++;
+								if (retry == 4)
+								{
+									Logger.WriteDebugLog("software retried thrice to write " + tempDatenStatus);
+									break;
+								}
+								try
+								{
+									master.WriteMultipleRegisters(0, HoldingRegisterDateAndStatus, currentDate);
+									Logger.WriteDebugLog(string.Format("{0} sent from computer.", tempDatenStatus));
+									isException = false;
+									Thread.Sleep(1000);
+								}
+								catch (Exception ex)
+								{
+
+									isException = true;
+									if (master != null) master.Dispose();
+									Logger.WriteErrorLog(ex.ToString());
+									master = ConnectModBus();
+									continue;
+								}
+							} while (isException);
+
+							retry = 0;
+							do
+							{
+								#region StopService
+								if (ServiceStop.stop_service == 1)
+								{
+									try
+									{
+										if (master != null)
+										{
+											master.Dispose();
+											master = null;
+										}
+
+										Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+										break;
+									}
+									catch (Exception ex)
+									{
+										Logger.WriteErrorLog(ex.Message);
+										break;
+									}
+								}
+								#endregion
+								if (retry > 0)
+								{
+									Thread.Sleep(4000);
+								}
+								retry++;
+								if (retry == 4)
+								{
+									Logger.WriteDebugLog("software retried thrice to get ack 0002");
+									break;
+								}
+								try
+								{
+									output = master.ReadHoldingRegisters(DateAndStatusAckAddress, numberOfBytesToRead);
+									Thread.Sleep(1000);
+								}
+								catch (Exception ex)
+								{
+									isException = true;
+									if (master != null) master.Dispose();
+									Logger.WriteErrorLog(ex.ToString());
+									master = ConnectModBus();
+									continue;
+								}
+								outputString = GetString(output).Trim(char.MinValue);//.TrimEnd(new char[] { '0' })
+								Logger.WriteDebugLog(string.Format("Ack {0} recieved from machine.", outputString));
+
+							} while (outputString != "0002");
+							if (outputString == "0002")
+							{
+								Thread.Sleep(1000);
+								tempDatenStatus = "0003TPMDTUEND";
+								currentDate = GetuShort(tempDatenStatus);
+								retry = 0;
+
+								do
+								{
+									#region StopService
+									if (ServiceStop.stop_service == 1)
+									{
+										try
+										{
+											if (master != null)
+											{
+												master.Dispose();
+												master = null;
+											}
+
+											Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+											break;
+										}
+										catch (Exception ex)
+										{
+											Logger.WriteErrorLog(ex.Message);
+											break;
+										}
+									}
+									#endregion
+									if (retry > 0)
+									{
+										Thread.Sleep(4000);
+									}
+									retry++;
+									if (retry == 4)
+									{
+										Logger.WriteDebugLog("software retried thrice to write 0003TPMDTUEND");
+										break;
+									}
+									try
+									{
+										master.WriteMultipleRegisters(0, HoldingRegisterDateAndStatus, currentDate);
+										Logger.WriteDebugLog(string.Format("{0} sent from computer.", tempDatenStatus));
+										isException = false;
+										Thread.Sleep(1000);
+									}
+									catch (Exception ex)
+									{
+										isException = true;
+										if (master != null) master.Dispose();
+										Logger.WriteErrorLog(ex.ToString());
+										master = ConnectModBus();
+										continue;
+									}
+								} while (isException);
+								retry = 0;
+								do
+								{
+									#region StopService
+									if (ServiceStop.stop_service == 1)
+									{
+										try
+										{
+											if (master != null)
+											{
+												master.Dispose();
+												master = null;
+											}
+
+											Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+											break;
+										}
+										catch (Exception ex)
+										{
+											Logger.WriteErrorLog(ex.Message);
+											break;
+										}
+									}
+									#endregion
+									if (retry > 0)
+									{
+										Thread.Sleep(4000);
+									}
+									retry++;
+									if (retry == 4)
+									{
+										Logger.WriteDebugLog("software retried thrice to get ack 0003");
+										break;
+									}
+									try
+									{
+										output = master.ReadHoldingRegisters(DateAndStatusAckAddress, numberOfBytesToRead);
+										Thread.Sleep(1000);
+									}
+									catch (Exception ex)
+									{
+										isException = true;
+										if (master != null) master.Dispose();
+										Logger.WriteErrorLog(ex.ToString());
+										master = ConnectModBus();
+										continue;
+									}
+									outputString = GetString(output).Trim(char.MinValue);//.TrimEnd(new char[] { '0' })
+									Logger.WriteDebugLog(string.Format("Ack {0} recieved from machine.", outputString));
+
+								} while (outputString != "0003");
+								if (outputString == "0003")
+								{
+									Logger.WriteDebugLog("Date Time Updation Successfull");
+								}
+								else
+								{
+									Logger.WriteDebugLog("Not able to get ack for TPMDTUEND");
+								}
+							}
+							else
+							{
+								Logger.WriteDebugLog("Not able to get ack for CurrentDate");
+							}
+						}
+						else
+						{
+							Logger.WriteDebugLog("Not able to get ack for TPMDTUBEGIN");
+						}
+					}
+
+					#endregion
+
+					// }
+				}
+			}
+			#endregion
+		}
+
+		private void InvokeDailyCheckListActivity(ref ModbusIpMaster master)
+		{
+			ushort[] output = null;
+
+			#region StopService
+			if (ServiceStop.stop_service == 1)
+			{
+				try
+				{
+					if (master != null)
+					{
+						master.Dispose();
+						master = null;
+					}
+
+					Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+					return;
+				}
+				catch (Exception ex)
+				{
+					Logger.WriteErrorLog(ex.Message);
+					return;
+				}
+			}
+			#endregion
+
+			try
+			{
+				#region Daily CheckLists
+
+				ushort dateregCnt = 2, timeregCnt = 4;
+				ushort dailyChkListflg = HoldingFlagsRegisterDailyCheckList;
+				for (int i = 1; i <= dailyChkLsts.Count; i++)
+				{
+					output = master.ReadHoldingRegisters(dailyChkListflg, 1);
+					if (output[0] == 1)
+					{
+						string date = string.Empty, time = string.Empty;
+						output = master.ReadHoldingRegisters((ushort)(HoldingRegisterDailyCheckList + dateregCnt), 2);
+						date = ModbusUtility.GetUInt32(output[1], output[0]).ToString();
+						output = master.ReadHoldingRegisters((ushort)(HoldingRegisterDailyCheckList + timeregCnt), 2);
+						time = ModbusUtility.GetUInt32(output[1], output[0]).ToString("000000");
+						Logger.WriteDebugLog(string.Format("Daily Maintenance CheckLists => Reading Date : {0} (In Register address : {1}) | Time : {2} (In Register address : {3}) | for Activity : {4} ", date, (HoldingRegisterDailyCheckList + dateregCnt), time, (HoldingRegisterDailyCheckList + timeregCnt), dailyChkLsts[i - 1].activity));
+						DatabaseAccess.insertDailyCheckList(this._machineId, DateTime.ParseExact(string.Format("{0}{1}", date, time), "yyyyMMddHHmmss", null), dailyChkLsts[i - 1].SlNo);
+
+						master.WriteSingleRegister(dailyChkListflg, 2);
+					}
+					dailyChkListflg++;
+					dateregCnt += 4;
+					timeregCnt += 4;
+				}
+
+				#endregion
+			}
+			catch (Exception ex)
+			{
+				Logger.WriteErrorLog(ex.ToString());
+			}
+		}
+
+		private void InvokePreventiveMaintenanceActivity(ref ModbusIpMaster master)
+		{
+			ushort[] output = null;
+
+			#region StopService
+			if (ServiceStop.stop_service == 1)
+			{
+				try
+				{
+					if (master != null)
+					{
+						master.Dispose();
+						master = null;
+					}
+
+					Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+					return;
+				}
+				catch (Exception ex)
+				{
+					Logger.WriteErrorLog(ex.Message);
+					return;
+				}
+			}
+			#endregion
+
+			try
+			{
+				#region 70% or 100%flag
+				output = master.ReadHoldingRegisters(HoldingRegisterPMCheckList70Perc, 1);
+				if (output[0] == 1)
+				{
+					//START - 56 - MACHINE ID - MAIN CATEGORY CODE - SUB CATEGORY CODE - SELECTION CODE - TARGET - ACTUAL -PERCENT COMPLETED -DATE - TIME - END                                 
+					var machineID = (int)(master.ReadHoldingRegisters(HoldingRegisterStr56PMMachineID, 1)[0]);
+					var selectionCode = (int)(master.ReadHoldingRegisters(HoldingRegisterStr56PMSelectionCode, 1)[0]);
+					output = master.ReadHoldingRegisters(HoldingRegisterStr56PMTarget, 2);
+					var target = ModbusUtility.GetUInt32(output[1], output[0]).ToString();
+					output = master.ReadHoldingRegisters(HoldingRegisterStr56PMActual, 2);
+					var actual = ModbusUtility.GetUInt32(output[1], output[0]).ToString();
+					output = master.ReadHoldingRegisters(HoldingRegisterStr56PMPercentage, 1);
+					var persentCompleted = Convert.ToInt16(output[0]);
+					output = master.ReadHoldingRegisters(HoldingRegisterStr56PMCurDate, 2);
+					var date = ModbusUtility.GetUInt32(output[1], output[0]).ToString();
+					output = master.ReadHoldingRegisters(HoldingRegisterStr56PMCurTime, 2);
+					var time = ModbusUtility.GetUInt32(output[1], output[0]).ToString("000000");
+					string str56 = string.Format("START-56-{0}-0-0-{1}-{2}-{3}-{4}-{5}-{6}-END", machineID, selectionCode, target, actual, persentCompleted, date, time);
+					Logger.WriteDebugLog(string.Format("Start-56 string recieved at {0} | Actual string : {1}", DateTime.Now.ToString("yyyy-MM-dd hh:mm:ss tt"), str56));
+					if (!string.IsNullOrEmpty(str56))
+					{
+						SaveStringToTPMFile(str56);
+						ProcessFile(str56, this._ipAddress, this._portNo.ToString(), this._machineId);
+					}
+					master.WriteSingleRegister(HoldingRegisterPMCheckList70Perc, 2);
+				}
+				#endregion
+
+				#region OK and NOT OK | Str57 and Str58
+				output = master.ReadHoldingRegisters(HoldingRegisterPMCheckListOKNOTOK, 1);
+				while (output[0] == 1)
+				{
+					var machineID = (int)(master.ReadHoldingRegisters(HoldingRegisterStr57PMMachineID, 1)[0]);
+					var operatorID = (int)(master.ReadHoldingRegisters(HoldingRegisterStr57PMOprID, 1)[0]);
+					var categoryId = (int)(master.ReadHoldingRegisters(HoldingRegisterStr57PMCatID, 1)[0]);
+					var subCategoryID = (int)(master.ReadHoldingRegisters(HoldingRegisterStr57PMSubCatID, 1)[0]);
+					var selectionCode = (int)(master.ReadHoldingRegisters(HoldingRegisterStr57PMSelectionCode, 1)[0]);
+					var notOkReason = (int)(master.ReadHoldingRegisters(HoldingRegisterStr57PMNOKreason, 1)[0]);
+					int dataType = notOkReason > 0 ? 58 : 57;
+					output = master.ReadHoldingRegisters(HoldingRegisterStr57PMTarget, 2);
+					var target = ModbusUtility.GetUInt32(output[1], output[0]).ToString();
+					output = master.ReadHoldingRegisters(HoldingRegisterStr57PMActual, 2);
+					var actual = ModbusUtility.GetUInt32(output[1], output[0]).ToString();
+					output = master.ReadHoldingRegisters(HoldingRegisterStr57PMCurDate, 2);
+					var date = ModbusUtility.GetUInt32(output[1], output[0]).ToString();
+					output = master.ReadHoldingRegisters(HoldingRegisterStr57PMCurTime, 2);
+					var time = ModbusUtility.GetUInt32(output[1], output[0]).ToString("000000");
+					#region string formats
+					/*/*  PM OK STRING FORMAT ;
+                       START - 57 - MACHINE ID 0- OPERATORID -1 MAIN CATEGORY CODE 2- SUB CATEGORY CODE 3- SELECTION CODE4 - TARGET 5- ACTUAL 6- DATE7 - TIME8 - END
+                       PM NOT OK STRING FORMAT ;
+                       START - 58 - MACHINE ID - OPERATORID - MAIN CATEGORY CODE - SUB CATEGORY CODE - SELECTION CODE - TARGET - ACTUAL - REASON - DATE - TIME - END */
+					#endregion
+					string strData57_58 = string.Empty;
+					if (dataType == 57)
+					{
+						strData57_58 = string.Format("START-57-{0}-{1}-{2}-{3}-{4}-{5}-{6}-{7}-{8}-END", machineID, operatorID, categoryId, subCategoryID, selectionCode, target, actual, date, time);
+						Logger.WriteDebugLog(string.Format("Start-57 string recieved at {0} | Actual string : {1}", DateTime.Now.ToString("yyyy-MM-dd hh:mm:ss tt"), strData57_58));
+					}
+					else if (dataType == 58)
+					{
+						strData57_58 = string.Format("START-58-{0}-{1}-{2}-{3}-{4}-{5}-{6}-{7}-{8}-{9}-END", machineID, operatorID, categoryId, subCategoryID, selectionCode, target, actual, notOkReason, date, time);
+						Logger.WriteDebugLog(string.Format("Start-58 string recieved at {0} | Actual string : {1}", DateTime.Now.ToString("yyyy-MM-dd hh:mm:ss tt"), strData57_58));
+					}
+
+
+
+					if (!string.IsNullOrEmpty(strData57_58))
+					{
+						SaveStringToTPMFile(strData57_58);
+						ProcessFile(strData57_58, this._ipAddress, this._portNo.ToString(), this._machineId);
+					}
+					master.WriteSingleRegister(HoldingRegisterPMCheckListOKNOTOK, 2);
+					Thread.Sleep(1000);
+					output = master.ReadHoldingRegisters(HoldingRegisterPMCheckListOKNOTOK, 1);
+				}
+				#endregion
+
+				#region ALL PM Done
+				//START-59-MC-DATE-TIME-END
+				output = master.ReadHoldingRegisters(HoldingRegisterPMCheckListAllDone, 1);
+				if (output[0] == 1)
+				{
+					var machineID = (int)(master.ReadHoldingRegisters(HoldingRegisterStr59PMMachineID, 1)[0]);
+					var operatorID = (int)(master.ReadHoldingRegisters(HoldingRegisterStr59PMOprID, 1)[0]);
+					output = master.ReadHoldingRegisters(HoldingRegisterStr59PMCurDate, 2);
+					var date = ModbusUtility.GetUInt32(output[1], output[0]).ToString();
+					output = master.ReadHoldingRegisters(HoldingRegisterStr59PMCurTime, 2);
+					var time = ModbusUtility.GetUInt32(output[1], output[0]).ToString("000000");
+					string str59 = string.Format("START-59-{0}-{1}-{2}-{3}-END", machineID, operatorID, date, time);
+					Logger.WriteDebugLog(string.Format("Start-59 string recieved at {0} | string : {1}", DateTime.Now.ToString("yyyy-MM-dd hh:mm:ss tt"), str59));
+					if (!string.IsNullOrEmpty(str59))
+					{
+						SaveStringToTPMFile(str59);
+						ProcessFile(str59, this._ipAddress, this._portNo.ToString(), this._machineId);
+					}
+					master.WriteSingleRegister(HoldingRegisterPMCheckListAllDone, 2);
+				}
+				#endregion
+			}
+			catch (Exception ex)
+			{
+				Logger.WriteErrorLog(ex.ToString());
+			}
+		}
+
+		// Done by Prince
+		#region Shanti Iron - Process Parameter
+		private void WriteParametersToPLC(ref ModbusIpMaster master)
+		{
+			try
+			{
+                ushort[] FlagToWritePLC = master.ReadHoldingRegisters((ushort)1606, (ushort)1);
+                if (FlagToWritePLC[0] == 1)
+                {
+					Logger.WriteDebugLog("Started writing Process Parameters to PLC");
+                    ushort[] output = master.ReadHoldingRegisters((ushort)1607, (ushort)10);
+                    string CompID = GetStringParameter(output).Trim(char.MinValue);
+                    output = master.ReadHoldingRegisters((ushort)1617, (ushort)2);
+                    string OpnID = GetStringParameter(output).Trim(char.MinValue);
+
+                    processParameter_Strings = DatabaseAccess.GetProcessParameterForPLC(this._machineId, CompID, OpnID);
+                    master.WriteSingleRegister((ushort)1581, (ushort)processParameter_Strings.Count);
+                    if (processParameter_Strings != null && processParameter_Strings.Count > 0)
+                    {
+                        foreach (string stringFromDB in processParameter_Strings)
+                        {
+                            processStrToWrite = GetuShortProcess(stringFromDB);
+                            master.WriteMultipleRegisters(HoldingRegisterWriteParameter, processStrToWrite);
+                            HoldingRegisterWriteParameter = (ushort)(HoldingRegisterWriteParameter + 15);
+							Logger.WriteDebugLog("Writing " + stringFromDB + " to PLC");
+                        }
+
+                        if (processParameter_Strings.Count != 15)
+                        {
+                            int i = processParameter_Strings.Count;
+                            while (i < 15)
+                            {
+                                processStrToWrite = GetuShort(" ");
+                                master.WriteMultipleRegisters(HoldingRegisterWriteParameter, processStrToWrite);
+                                HoldingRegisterWriteParameter = (ushort)(HoldingRegisterWriteParameter + 15);
+                                i++;
+                            }
+                        }
+                        HoldingRegisterWriteParameter = (ushort)1100;
+                        Logger.WriteDebugLog("Process Parameters Has been sent to PLC");
+                    }
+                    master.WriteSingleRegister((ushort)1606, (ushort)0);
+                }
+            }
+			catch (Exception ex)
+			{
+				Logger.WriteErrorLog("Exception In Writing Process: " + ex.Message);
+			}
+
+		}
+		private void HandingProcessParameter_String(ref ModbusIpMaster master)
+        {
+            ushort[] output;
+            ushort[] stringToInsertToDB;
+            ushort[] RealToInsertToDB;
+            string CompID = string.Empty;
+            
+            
+            if (processParameter_Strings != null && processParameter_Strings.Count > 0)
+            {
+                ushort[] NoOfParamterToRead = master.ReadHoldingRegisters((ushort)1582, (ushort)1);
+                ushort[] readFlag = master.ReadHoldingRegisters((ushort)1580, (ushort)1);
+
+                #region Read Flag-Trial
+                //if(readFlag[0] ==1 || readFlag[0]==3 || readFlag[0] == 5)
+                //{
+                //    if (NoOfParamterToRead[0] - 5 > 0)
+                //    {
+                //        for (int i = 0; i < 5; i++)
+                //        {
+                //            stringToInsertToDB = master.ReadHoldingRegisters(HoldingRegisterReadParameter, (ushort)15);
+                //            RealToInsertToDB = master.ReadHoldingRegisters(HoldingRegisterReadParamValue, (ushort)4);
+
+                //            string Dimension = GetStringParameter(stringToInsertToDB).Trim(char.MinValue);
+                //            float Value = GetFloat(RealToInsertToDB);
+
+                //            output = master.ReadHoldingRegisters((ushort)1584, (ushort)2);
+                //            string machineId = GetStringParameter(output).Trim(char.MinValue);
+                //            output = master.ReadHoldingRegisters((ushort)1586, (ushort)10);
+                //            string Comp = GetStringParameter(output).Trim(char.MinValue);
+                //            output = master.ReadHoldingRegisters((ushort)1596, (ushort)2);
+                //            string Opn = GetStringParameter(output).Trim(char.MinValue);
+                //            output = master.ReadHoldingRegisters((ushort)1598, (ushort)2);
+                //            string Opr = GetStringParameter(output).Trim(char.MinValue);
+                //            DateTime TimeStamp = DateTime.Now;
+                //            DateTime BatchTS = DateTime.Now;
+
+                //            DatabaseAccess.InsertStringRealToSPCAutoData(machineId, Comp, Opn, Opr, Dimension, Value, TimeStamp, BatchTS);
+                //            HoldingRegisterReadParamValue = (ushort)(HoldingRegisterReadParamValue + 2);
+                //            HoldingRegisterReadParameter = (ushort)(HoldingRegisterReadParameter + 15);
+                //        }
+                //        master.WriteSingleRegister((ushort)1580, readFlag[0] += (ushort)1);
+                //        NoOfParamterToRead[0] -= (ushort)5;
+                //    }
+                //    else
+                //    {
+                //        for (int i = 0; i < NoOfParamterToRead[0]; i++)
+                //        {
+                //            stringToInsertToDB = master.ReadHoldingRegisters(HoldingRegisterReadParameter, (ushort)15);
+                //            RealToInsertToDB = master.ReadHoldingRegisters(HoldingRegisterReadParamValue, (ushort)4);
+
+                //            string Dimension = GetStringParameter(stringToInsertToDB).Trim(char.MinValue);
+                //            float Value = GetFloat(RealToInsertToDB);
+
+                //            output = master.ReadHoldingRegisters((ushort)1584, (ushort)2);
+                //            string machineId = GetStringParameter(output).Trim(char.MinValue);
+                //            output = master.ReadHoldingRegisters((ushort)1586, (ushort)10);
+                //            string Comp = GetStringParameter(output).Trim(char.MinValue);
+                //            output = master.ReadHoldingRegisters((ushort)1596, (ushort)2);
+                //            string Opn = GetStringParameter(output).Trim(char.MinValue);
+                //            output = master.ReadHoldingRegisters((ushort)1598, (ushort)2);
+                //            string Opr = GetStringParameter(output).Trim(char.MinValue);
+                //            DateTime TimeStamp = DateTime.Now;
+                //            DateTime BatchTS = DateTime.Now;
+
+                //            DatabaseAccess.InsertStringRealToSPCAutoData(machineId, Comp, Opn, Opr, Dimension, Value, TimeStamp, BatchTS);
+                //            HoldingRegisterReadParamValue = (ushort)(HoldingRegisterReadParamValue + 2);
+                //            HoldingRegisterReadParameter = (ushort)(HoldingRegisterReadParameter + 15);
+                //        }
+                //        NoOfParamterToRead[0] = (ushort)0;
+                //        //master.WriteSingleRegister((ushort)1580, readFlag[0] += (ushort)1);
+                //    }
+                //}
+                #endregion
+                if (readFlag[0] == 1 || readFlag[0] == 3 || readFlag[0] == 5)
+                {
+					if (readFlag[0] == 1)
+					{
+						HoldingRegisterReadParameter= (ushort)1325;
+						HoldingRegisterReadParamValue = (ushort)1550;
+					} 
+
+					for (int i = 0; i < 5; i++)
+                    {
+                        stringToInsertToDB = master.ReadHoldingRegisters(HoldingRegisterReadParameter, (ushort)15);
+                        RealToInsertToDB = master.ReadHoldingRegisters(HoldingRegisterReadParamValue, (ushort)4);
+
+                        string Dimension = GetStringParameter(stringToInsertToDB).Trim(char.MinValue);
+						if (string.IsNullOrEmpty(Dimension))
+							continue;
+                        float Value = GetFloat(RealToInsertToDB);
+
+                        output = master.ReadHoldingRegisters((ushort)1584, (ushort)2);
+                        string machineId = GetStringParameter(output).Trim(char.MinValue);
+                        output = master.ReadHoldingRegisters((ushort)1586, (ushort)10);
+                        string Comp = GetStringParameter(output).Trim(char.MinValue);
+                        output = master.ReadHoldingRegisters((ushort)1596, (ushort)2);
+                        string Opn = GetStringParameter(output).Trim(char.MinValue);
+                        output = master.ReadHoldingRegisters((ushort)1598, (ushort)2);
+                        string Opr = GetStringParameter(output).Trim(char.MinValue);
+						output = master.ReadHoldingRegisters((ushort)1600, (ushort)4);
+						string slNo = GetStringParameter(output).Trim(char.MinValue);
+                        DateTime TimeStamp = DateTime.Now;
+						output = master.ReadHoldingRegisters((ushort)1620, (ushort)2);
+                        string date = ModbusUtility.GetUInt32(output[1],output[0]).ToString("00000000");//cycle start date
+						output = master.ReadHoldingRegisters((ushort)1622, (ushort)2);
+                        string time = ModbusUtility.GetUInt32(output[1], output[0]).ToString("000000");//cycle start time
+						DateTime BatchTS = DateTime.ParseExact(string.Format("{0}{1}", date, time), "yyyyMMddHHmmss", null);
+
+						DatabaseAccess.InsertParameterDataToSPCAutoData(slNo,machineId, Comp, Opn, Opr, Dimension, Value, TimeStamp, BatchTS);
+                        HoldingRegisterReadParamValue = (ushort)(HoldingRegisterReadParamValue + 2);
+                        HoldingRegisterReadParameter = (ushort)(HoldingRegisterReadParameter + 15);
+                    }
+                    master.WriteSingleRegister((ushort)1580, readFlag[0] += (ushort)1);
+                }
+            }
+
+        }
+        #endregion
+
+
+        private static string GetString(ushort[] data)
+		{
+			StringBuilder str = new StringBuilder();
+			foreach (ushort i in data)
+			{
+				byte[] byteArray = BitConverter.GetBytes(i);
+				byte temp = byteArray[0];
+				byteArray[0] = byteArray[1];
+				byteArray[1] = temp;
+				str.Append(Encoding.UTF8.GetString(byteArray));
+			}
+			return str.ToString().Trim();
+		}
+
+		private static string GetStringParameter(ushort[] data)
+		{
+			StringBuilder str = new StringBuilder();
+			foreach (ushort i in data)
+			{
+				byte[] byteArray = BitConverter.GetBytes(i);
+				str.Append(Encoding.UTF8.GetString(byteArray));
+			}
+			return str.ToString();
+		}
+		private float GetFloat(ushort[] input)
+		{
+			byte[] b = { (byte)(input[0] & 0xff), (byte)(input[0] >> 8), (byte)(input[1] & 0xff), (byte)(input[1] >> 8) };
+			return System.BitConverter.ToSingle(b, 0);
+		}
+		private static ushort[] GetuShort(string str)
+		{
+			ushort[] uTempShort = null;
+			try
+			{
+				char[] tempChararray = str.ToCharArray();
+				if (tempChararray.Length % 2 == 0) uTempShort = new ushort[tempChararray.Length / 2];
+				else uTempShort = new ushort[tempChararray.Length / 2 + 1];
+				int j = 0;
+				for (int i = 0; i < tempChararray.Length; i = i + 2)
+				{
+					byte[] byteArray1 = new byte[2];
+					byte[] byteArray2 = new byte[2];
+					byteArray1 = BitConverter.GetBytes(tempChararray[i]);
+					if (i + 1 < tempChararray.Length) byteArray2 = BitConverter.GetBytes(tempChararray[i + 1]);
+					ushort us = (ushort)(byteArray2[0] + byteArray1[0] * 256);
+					uTempShort[j] = us;
+					j++;
+					// ADD THIS USHORT TO ARRAY
+				}
+			}
+			catch (Exception ex)
+			{
+				Logger.WriteErrorLog(ex.ToString());
+			}
+			return uTempShort;
+
+		}
+
+        private static ushort[] GetuShortProcess(string str)
+        {
+            ushort[] uTempShort = null;
+            try
+            {
+                char[] tempChararray = str.ToCharArray();
+                if (tempChararray.Length % 2 == 0) uTempShort = new ushort[tempChararray.Length / 2];
+                else uTempShort = new ushort[tempChararray.Length / 2 + 1];
+                int j = 0;
+                for (int i = 0; i < tempChararray.Length; i = i + 2)
+                {
+                    byte[] byteArray1 = new byte[2];
+                    byte[] byteArray2 = new byte[2];
+                    byteArray1 = BitConverter.GetBytes(tempChararray[i]);
+                    if (i + 1 < tempChararray.Length) byteArray2 = BitConverter.GetBytes(tempChararray[i + 1]);
+                    ushort us = (ushort)(byteArray1[0] + byteArray2[0] * 256);
+                    uTempShort[j] = us;
+                    j++;
+                    // ADD THIS USHORT TO ARRAY
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.WriteErrorLog(ex.ToString());
+            }
+            return uTempShort;
+
+        }
+
+        private int CheckMessageType(byte[] smallbuff)
+		{
+			int messageType = 0;
+			messageType = smallbuff[0];
+			return messageType;
+		}
+
+		private int Get_header_length(byte[] smallbuff)
+		{
+			byte[] len = new byte[2];
+			len[0] = smallbuff[2];
+			len[1] = smallbuff[3];
+			int msg_len_specified = 0;
+			msg_len_specified = get_decimal(len[0], 0);
+			msg_len_specified += get_decimal(len[1], 1);
+			return msg_len_specified;
+		}
+
+		private void MakeFileId()
+		{
+			try
+			{
+				Logger.WriteDebugLog("comes to make id file function");
+				string apath = "";
+				string max_id_value = "65535";
+				appPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+				apath = appPath;
+				if (!Directory.Exists(apath + "\\LAST_ID\\"))
+				{
+					Console.WriteLine("last id dir is created");
+					Logger.WriteDebugLog("last id dir is created");
+					Directory.CreateDirectory(apath + "\\LAST_ID\\");
+				}
+
+				StreamWriter writer1 = new StreamWriter(apath + "\\LAST_ID\\" + this._ipAddress.ToString() + ".txt", true);
+				writer1.Close();
+				writer1.Dispose();
+
+				//Thread.Sleep(1000);
+				// Thread.Sleep(500); //sande
+
+				Thread.Sleep(50);
+
+				StreamReader reader = new StreamReader(apath + "\\LAST_ID\\" + this._ipAddress.ToString() + ".txt");
+				string res;
+				res = reader.ReadLine();
+
+				Logger.WriteDebugLog("res value is" + res);
+				reader.Close();
+				reader.Dispose();
+
+
+				if (res == null)
+				{
+					StreamWriter writer2 = new StreamWriter(apath + "\\LAST_ID\\" + this._ipAddress.ToString() + ".txt", false);
+					Console.WriteLine("id file is null");
+					Logger.WriteDebugLog("id ffile is null");
+					//   Console.ReadLine();
+					writer2.WriteLine("0");
+					writer2.Flush();
+					writer2.Close();
+					writer2.Dispose();
+
+				}
+				else if (res == max_id_value)
+				{
+					StreamWriter writer2 = new StreamWriter(apath + "\\LAST_ID\\" + this._ipAddress.ToString() + ".txt", false);
+					Console.WriteLine("max id");
+					Logger.WriteDebugLog("max id");
+					writer2.WriteLine("0");
+					writer2.Flush();
+					writer2.Close();
+					writer2.Dispose();
+
+				}
+				else
+				{
+					StreamWriter writer3 = new StreamWriter(apath + "\\LAST_ID\\" + this._ipAddress.ToString() + ".txt", true);
+					writer3.Close();
+					writer3.Dispose();
+				}
+			}
+			catch (Exception ex)
+			{
+				Logger.WriteErrorLog(ex.Message);
+			}
+		}
+
+		private void SetMsgId(byte[] smallbuff)//gets the current id from buffer rxd//
+		{
+			try
+			{
+				byte[] id = new byte[2];
+
+				id[0] = smallbuff[6];
+				id[1] = smallbuff[7];
+
+				int res = get_decimal(id[0], 0);
+				res += get_decimal(id[1], 1);
+
+				cur_id = res.ToString();
+				Logger.WriteDebugLog("currnt Message ID : " + cur_id);
+			}
+			catch (Exception ex)
+			{
+				Logger.WriteErrorLog(ex.Message);
+			}
+		}
+
+		private static int get_decimal(byte byt, int type)
+		{
+			int b = (int)byt;
+			int p = 0;
+			if (type == 0)
+				p = 8;
+			if (type == 1)
+				p = 0;
+
+			int sum = 0;
+			int r = 0;
+			do
+			{
+				r = b % 2;
+				sum += r * (int)Math.Pow((double)2.0, (double)p);
+				p++;
+				b /= 2;
+
+			} while (b > 0);
+			return sum;
+
+		}
+
+		private string SaveDataToFile(string data, string ip, string port, string MName)
+		{
+			string pendingDataToProcess = string.Empty;
+			try
+			{
+				pendingDataToProcess = ProcessFile(data, ip, port, MName);
+				Logger.WriteDebugLog("Unprocessed string(pendingDataToProcess) is: " + pendingDataToProcess);
+			}
+			catch (Exception ex)
+			{
+				Logger.WriteErrorLog("Error in SaveDataToFile() - " + ex.Message);
+			}
+			return pendingDataToProcess;
+		}
+
+		private void SaveStringToTPMFile(string str)
+		{
+			string progTime = String.Format("_{0:yyyyMMdd}", DateTime.Now);
+
+			StreamWriter writer = default(StreamWriter);
+			try
+			{
+				writer = new StreamWriter(appPath + "\\TPMFiles\\F-" + Thread.CurrentThread.Name + progTime + ".txt", true);
+				writer.WriteLine(str);
+				writer.Flush();
+			}
+			catch (Exception ex)
+			{
+				Logger.WriteErrorLog(ex.Message);
+			}
+			finally
+			{
+				if (writer != null)
+				{
+					writer.Close();
+					writer.Dispose();
+				}
+			}
+		}
+
+		private void SaveLastStringID()
+		{
+			string apath = appPath;
+			string max_id_value = "65535";
+			if (!Directory.Exists(apath + "\\LAST_ID\\"))
+			{
+				Directory.CreateDirectory(apath + "\\LAST_ID\\");
+			}
+			StreamWriter writer = new StreamWriter(apath + "\\LAST_ID\\" + this._ipAddress.ToString() + ".txt", false);
+
+			if (cur_id == max_id_value)
+			{
+				writer.WriteLine("0");
+				writer.Flush();
+			}
+			else
+			{
+				if (cur_id == null)
+					Logger.WriteDebugLog("current id is made as null now");
+				writer.WriteLine(cur_id.ToString());
+				writer.Flush();
+			}
+			//writer.Flush();
+			writer.Close();
+			writer.Dispose();
+			Logger.WriteDebugLog("current id is savd to the file");
+			// Thread.Sleep(500); commented sande
+
+			////string Apath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+			////string ProgTime1 = String.Format("{0:ddMMMyy}", DateTime.Now);
+			////if(!Directory.Exists(Apath+"\\last_ID_files\\"))
+			////{
+			////    Directory.CreateDirectory(Apath+"\\last_ID_files\\");//with the execution module//
+			////}
+
+			////StreamWriter writer = new StreamWriter(Apath+"\\last_ID_files\\" + MName.Replace("\\", "") + ProgTime1 + "ID.txt",false);
+
+			////writer.Write(cur_id);
+			////writer.Flush();
+			////writer.Close();
+			////writer.Dispose();
+
+
+
+		}
+
+		private void SendAck(byte byte6, byte byte7)
+		{
+			Logger.WriteDebugLog("Sending ACK for message ID : " + cur_id);
+
+			byte[] ack = new byte[8];
+			Array.Clear(ack, 0, 8);
+			ack[6] = byte6;
+			ack[7] = byte7;
+			ack[0] = byte.Parse("19");
+			ack[1] = byte.Parse("1");
+
+			try
+			{
+				int n = socket.Send(ack);
+				if (n <= 0)
+				{
+					Logger.WriteErrorLog("From SendAck() returns : " + n.ToString());
+				}
+			}
+			catch (ObjectDisposedException ex)
+			{
+				Logger.WriteErrorLog("From SendAck() Object disposed exception" + ex.Message);
+				//throw;
+			}
+			catch (Exception ex)
+			{
+				Logger.WriteErrorLog("From SendAck() " + ex.Message);
+				//throw;
+			}
+
+			Thread.Sleep(100);
+			Logger.WriteDebugLog("ACK sent for message ID : " + cur_id);
+		}
+
+		private string GetLastSavedId()
+		{
+			//////string Apath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+			////string ProgTime1 = String.Format("{0:ddMMMyy}", DateTime.Now);
+			////StreamReader reader = new StreamReader(Apath + "\\last_ID_files\\" + MName.Replace("\\", "") + ProgTime1 + "ID.txt", false);
+			////string saved_id = reader.ReadLine();
+			////reader.Close();
+			////reader.Dispose();
+			//WriteInToFile("get savd id starts");
+			////return saved_id;
+			string apath = "";
+			apath = appPath;
+
+			StreamReader reader = new StreamReader(apath + "\\LAST_ID\\" + this._ipAddress.ToString() + ".txt");
+			//reader.re
+			string id = reader.ReadLine();
+			reader.Close();
+			reader.Dispose();
+			Logger.WriteDebugLog(" saved id: returnd is :" + id + " " + DateTime.Now.ToString());
+			Console.WriteLine("savd id is :" + id);
+			// WriteInToFile("end of getting savd id");
+			// Thread.Sleep(500); commented by sande
+			return id;
+		}
+
+		public void WriteInToFileDataArr(string str)
+		{
+			string ProgTime = String.Format("_{0:yyyyMMdd}", DateTime.Now);
+			string Location = appPath + "\\Logs\\DataArrival-" + ProgTime + ".txt";
+
+			StreamWriter writer = default(StreamWriter);
+			try
+			{
+				writer = new StreamWriter(Location, true, Encoding.Default, 8195);
+				writer.WriteLine(str);
+				writer.Flush();
+			}
+			catch (Exception ex)
+			{
+				Logger.WriteErrorLog(ex.Message);
+			}
+			finally
+			{
+				writer.Close();
+				writer.Dispose();
+			}
+		}
+
+		public void WriteInToFileDBInsert(string str)
+		{
+			string progTime = String.Format("_{0:yyyyMMdd}", DateTime.Now);
+			string location = appPath + "\\Logs\\DBInsert-" + MName.Replace("\\", "") + progTime + ".txt";
+
+			StreamWriter writer = default(StreamWriter);
+			try
+			{
+				writer = new StreamWriter(location, true, Encoding.Default, 8195);
+				writer.WriteLine(str);
+				writer.Flush();
+			}
+			catch (Exception ex)
+			{
+				Logger.WriteErrorLog(ex.Message);
+			}
+			finally
+			{
+				if (writer != null)
+				{
+					writer.Close();
+					writer.Dispose();
+				}
+			}
+		}
+
+		public string ProcessFile(string InputStr, string IP, string PortNo, string MName)
+		{
+			//string IStr = "STR-1-0111-000000001-1-0002-1-20110713-175258914-20110713-175847898-ENDSTR-2-0111-000000001-1-0002-004-20110713-175847898-20110713-180414434-ENDSTR-2-0111-000000001-1-0002-004-20110713-180414434-20110713-180426533-ENDSTR-11-0111-000000001-1-0002-20110713-180428371-ENDSTR-1-0111-000000001-1-0002-1-20110713-180428371-20110713-180518682-ENDSTR-2-0111-000000001-1-0002-003-20110713-180518682-20110713-181211112-ENDSTR-11-0111-000000001-1-0002-20110713-181212663-ENDSTR-1-0111-000000001-1-0002-1-20110713-181212663-20110713-184411916-ENDSTR-2-0111-000000001-1-0002-004-20110713-184411916-20110713-184518368-ENDSTR-11-0111-000000001-1-0002-20110713-184524040-ENDSTR-1-0111-000000001-1-0002-1-20110713-184524040-20110713-184525875-ENDSTR-11-0111-000000001-1-0002-20110713-184528122-ENDSTR-1-0111-000000001-1-0002-1-20110713-184528122-20110713-185403214-ENDSTR-2-0111-000000001-1-0002-003-20110713-185403214-20110713-185603297-ENDSTR-11-0111-000000001-1-0002-20110713-185605522-ENDSTR-1-0111-000000001-1-0002-1-20110713-185605522-20110713-185606226-END";
+			//string IStr = "STR-1-0111-000000001-1-0002-1-20110713-175258914-20110713-175847898-ENDSTR-2-0111-000000001-1-0002-004-20110713-175847898-20110713-180414434-ENDSTR-2-0111-000000001-1-0002-004-20110713-180414434-20110713-180426533-ENDSTR-11-0111-000000001-1-0002-20110713-180428371-ENDSTR-1-0111-000000001-1-0002-1-20110713-180428371-20110713-180518682-ENDSTR-2-0111-000000001-1-0002-003-20110713-180518682-20110713-181211112-ENDSTR-11-0111-000000001-1-0002-20110713-181212663-ENDSTR-1-0111-000000001-1-0002-1-20110713-181212663-20110713-184411916-ENDSTR-2-0111-000000001-1-0002-004-20110713-184411916-20110713-184518368-ENDSTR-11-0111-000000001-1-0002-20110713-184524040-ENDSTR-1-0111-000000001-1-0002-1-20110713-184524040-20110713-184525875-ENDSTR-11-0111-000000001-1-0002-20110713-184528122-ENDSTR-1-0111-000000001-1-0002-1-20110713-184528122-20110713-185403214-ENDSTR-2-0111-000000001-1-0002-003-20110713-185403214-20110713-185603297-ENDSTR-11-0111-000000001-1-0002-20110713-185605522-ENDSTR-1-0111-000000001-1-0002-1-20110713";
+			//string IStr = "STR-1-0111-000000001-1-0002-1-20110713-175258914-20110713-175847898-ENDSTR-2-0111-000000001-1-0002-004-20110713-175847898-20110713-180414434-ENDSTR-2-0111-000000001-1-0002-004-20110713-180414434-20110713-180426533-ENDSTR-11-0111-000000001-1-0002-20110713-180428371-ENDSTR-1-0111-000000001-1-0002-1-20110713-180428371-20110713-180518682-ENDSTR-2-0111-000000001-1-0002-003-20110713-180518682-20110713-181211112-ENDSTR-11-0111-000000001-1-0002-20110713-181212663-ENDSTR-1-0111-000000001-1-0002-1-20110713-181212663-20110713-184411916-ENDSTR-2-0111-000000001-1-0002-004-20110713-184411916-20110713-184518368-ENDSTR-11-0111-000000001-1-0002-20110713-184524040-ENDSTR-1-0111-000000001-1-0002-1-20110713-184524040-20110713-184525875-ENDSTR-11-0111-000000001-1-0002-20110713-184528122-ENDSTR-1-0111-000000001-1-0002-1-20110713-184528122-20110713-185403214-ENDSTR-2-0111-000000001-1-0002-003-20110713-185403214-20110713-185603297-ENDSTR-11-0111-000000001-1-0002-20110713-185605522-E";
+			string IStr = InputStr.ToUpper().Trim();
+			RequestData r1 = new RequestData();
+			r1.LOF = IStr.Length;
+
+			while (r1.LOF > 0 && r1.Status != 2)
+			{
+				try
+				{
+					r1 = FindStartEnd(IStr.Substring(IStr.Length - r1.LOF), IP);
+					if (r1.SEStatus == "N")
+					{
+						WriteInToFileDBInsert(string.Format("{0} : String return from ProcessFile() : {1} ; for machine IP : {2}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss:FFFF"), r1.Program, IP));
+						return r1.Program;
+					}
+					if (r1.Program.IndexOf("START", "START".Length) > 0)
+					{
+						r1.Program = r1.Program.Substring(r1.Program.IndexOf("START", "START".Length));
+					}
+					string ValidString = FilterInvalids(r1.Program);
+					// string vs = ValidString;
+
+					WriteInToFileDBInsert(string.Format("{0} : Start Insert Record - {1} ; IP = {2}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss:FFFF"), ValidString, IP));
+					InsertDataUsingSP(ValidString, IP, PortNo);
+					WriteInToFileDBInsert(string.Format("{0} : Stop Insert - {1}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss:FFFF"), IP));
+
+					/*  Review required
+                     bool type_3 = false;
+                     type_3 = check_if_type3(vs);
+                     if (type_3 == true)
+                     {
+                         PullProgramTransfer ppt = new PullProgramTransfer(interfaceId);
+                         ppt.pull_function(vs);//to check and register program to send// 
+                     }
+                     else
+                     {
+                         WriteInToFileDBInsert(string.Format("{0} : Start Insert Record - {1} ; IP = {2}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss FFFFF"), ValidString, IP));
+                         InsertDataUsingSP(ValidString, IP, PortNo);
+                         WriteInToFileDBInsert(string.Format("{0} : Stop Insert - {1}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss FFFFF"), IP));
+                     }
+                     type_3 = false;
+                     */
+				}
+				catch (Exception ex)
+				{
+					Logger.WriteErrorLog("ProcessFile() :" + ex.Message);
+				}
+			}
+			return string.Empty;
+		}
+
+		private bool check_if_type3(string temp)
+		{
+			if (temp.IndexOf("START-3-") >= 0 && temp.IndexOf("END") > 0 && temp.IndexOf("END") > temp.IndexOf("START-3-"))
+			{
+				return true;
+			}
+			else
+				return false;
+		}
+
+		public static string FilterInvalids(string DataString)
+		{
+			string FilterString = string.Empty;
+			try
+			{
+				for (int i = 0; i < DataString.Length; i++)
+				{
+					byte[] asciiBytes = Encoding.ASCII.GetBytes(DataString.Substring(i, 1));
+
+					if (asciiBytes[0] >= Encoding.ASCII.GetBytes("#")[0] && asciiBytes[0] <= Encoding.ASCII.GetBytes("}")[0])  //to handle STR   -1-0111-000000001-1-0002-1-20110713-175258914-20110713-175847898-END more than 2 spaces in string
+					{
+						FilterString = FilterString + DataString.Substring(i, 1);
+					}
+				}
+			}
+			catch (Exception ex)
+			{
+				Logger.WriteErrorLog(ex.Message);
+			}
+			return FilterString;
+		}
+
+		public static int InsertDataUsingSP(string DataString, string IP, string PortNo)
+		{
+			int OutPut = 0;
+			bool succeeded = false;
+			int tries = 4;
+			do
+			{
+				SqlConnection Con = ConnectionManager.GetConnection();
+				SqlCommand cmd = new SqlCommand("s_GetProcessDataString", Con);
+				cmd.CommandType = CommandType.StoredProcedure;
+
+				cmd.Parameters.Add("@datastring", SqlDbType.NVarChar).Value = DataString;
+				cmd.Parameters.Add("@IpAddress", SqlDbType.NVarChar).Value = IP;
+				cmd.Parameters.Add("@OutputPara", SqlDbType.Int).Value = 0;
+				cmd.Parameters.Add("@LogicalPortNo", SqlDbType.SmallInt).Value = PortNo;
+
+				try
+				{
+					OutPut = cmd.ExecuteNonQuery();
+					succeeded = true;
+					if (OutPut < 0)
+					{
+						Logger.WriteErrorLog(string.Format("InsertDataUsingSP() - ExecuteNonQuery returns < 0 value : {0} :- {1}", IP, DataString));
+					}
+				}
+				catch (Exception ex)
+				{
+					tries--;
+					Logger.WriteErrorLog("InsertDataUsingSP():" + ex.ToString());
+					Thread.Sleep(1000);
+				}
+				finally
+				{
+					if (Con != null) Con.Close();
+				}
+			} while (!succeeded && tries > 0);
+
+			return OutPut;
+		}
+
+		public static RequestData FindStartEnd(string Infiledata, string ip)
+		{
+			RequestData Req = new RequestData();
+			Req.LOF = 0;
+			Req.Status = 0;
+			try
+			{
+				Regex StartmyRegEx = new Regex(@"S\s*T\s*A\s*R\s*T\s*");//\s* means any no of
+																		//white space
+				Regex EndmyRegEx = new Regex(@"E\s*N\s*D\s*");
+
+				bool ResultS = StartmyRegEx.IsMatch(Infiledata);
+				bool ResultE = EndmyRegEx.IsMatch(Infiledata);
+
+				if (ResultS == true && ResultE == true)
+				{
+					//sande
+					int Sstr = 0, Estr = 0;
+					string prg = string.Empty;
+					int LOF = 0;
+					//sande
+					if (Infiledata.IndexOf("END") > Infiledata.IndexOf("START"))///if START comes before END
+					{
+						Sstr = Infiledata.IndexOf("START");
+						Estr = Infiledata.IndexOf("END", Sstr);
+						prg = GetString(Infiledata.Substring(Sstr), "START", "END", out LOF);
+
+						Req.LOF = LOF;
+						Req.Program = prg;
+						if (prg == "" || prg.Length < 3)
+						{
+							Req.Status = 2;
+						}
+						else
+						{
+							Req.Status = 0;
+						}
+						Req.Process = 1;
+						Req.SEStatus = "Y";
+						return Req;
+					}
+
+					else
+					{
+						//"ST-76-05-03-01-20121003-085839-ENDSTART-76-05-03-01-02-20121003-085839-20121003-085840-END";
+
+						Sstr = Infiledata.IndexOf("START");
+						Estr = Infiledata.IndexOf("END", Sstr);
+
+						if (Estr == -1)//if end not comes//
+						{
+							Req.Program = "";
+							Req.Status = 2;
+						}
+
+						else//if end comes before start//
+						{
+							int IndexOfFirstEnd = Infiledata.IndexOf("END");
+							string TargetString = Infiledata.Substring(IndexOfFirstEnd + 3, Infiledata.Length - IndexOfFirstEnd - 3);
+							prg = GetString(TargetString, "START", "END", out LOF);
+							Req.LOF = LOF;
+							Req.Program = prg;
+							Req.SEStatus = "Y";
+							Req.Process = 1;
+						}
+					}
+				}
+
+				if (ResultS == true && ResultE == false)//if there is no END in the string//
+				{
+					if (Infiledata.IndexOf("START") > 0)//if there is START//
+					{
+						int Sstr = 0;
+						string prg = string.Empty;
+						Sstr = Infiledata.IndexOf("START");
+						int LOF = 0;
+						prg = GetString(Infiledata.Substring(Sstr), "START", "END", out LOF);
+
+						Req.LOF = LOF;
+						Req.Program = prg;
+						if (prg == "" || (prg.IndexOf("END") != 0))
+						{
+							Req.Status = 2;
+							//Req.Status = 3;
+						}
+						else
+						{
+							Req.Status = 0;
+						}
+						Req.Process = 1;
+						return Req;
+					}
+				}
+
+				if (ResultS == false && ResultE == true)//if there is only END and not START//
+				{
+					if (Infiledata.IndexOf("END") > 0)
+					{
+						int Sstr = 0;
+						string prg = string.Empty;
+						Sstr = Infiledata.IndexOf("START");
+
+						Req.LOF = 0;
+						Req.Program = "";
+						Req.Status = 2;
+						Req.Process = 1;
+
+						return Req;
+					}
+				}
+
+				if (Req.Process == 0)
+				{
+					Req.Program = Infiledata;
+					Req.LOF = -2;
+				}
+			}
+			catch (Exception ex)
+			{
+				Logger.WriteErrorLog("FindStartEnd() : " + ex.Message);
+
+			}
+			return Req;
+		}
+
+		public static string GetString(string prg, string SDelimit, string EDelimit, out int LOF)
+		{
+			int PrgIs = 0, PrgIe = 0;
+			string Program = string.Empty;
+			if (SDelimit == EDelimit)
+			{
+				PrgIs = prg.IndexOf(SDelimit);
+				PrgIs = prg.IndexOf(SDelimit, PrgIs + 1);
+				PrgIe = prg.IndexOf(EDelimit, PrgIs + 1);
+				//PrgIe = prg.IndexOf(EDelimit, PrgIs + 1);
+			}
+			else
+			{
+				PrgIs = prg.IndexOf(SDelimit);
+				//PrgIe = prg.IndexOf(EDelimit, PrgIs + 1);
+				//PrgIe = prg.IndexOf(EDelimit, PrgIs + EDelimit.Length);
+				PrgIe = prg.IndexOf(EDelimit, PrgIs);
+			}
+
+			if (PrgIs != -1 && PrgIe != -1)
+			{
+				Program = prg.Substring(PrgIs, PrgIe - PrgIs + EDelimit.Length);
+				//LOF = prg.Length - PrgIe - 1;
+				LOF = prg.Length - PrgIe - EDelimit.Length;
+			}
+			else
+			{
+				if (PrgIs != -1)
+				{
+					Program = prg.Substring(PrgIs, prg.Length - PrgIs);
+					//LOF = prg.Length - PrgIs;
+					LOF = prg.Length - PrgIs - EDelimit.Length;
+				}
+				else
+				{
+					Program = prg;
+					LOF = prg.Length;
+				}
+			}
+			return Program;
+		}
+
+		public static string ReadFullFileData(string location)
+		{
+			FileStream fileStream = null;
+			string str = "";
+			byte[] buffer = null;
+			try
+			{
+				fileStream = File.Open(location, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+				int length = (int)fileStream.Length;  // get file length
+				buffer = new byte[length];            // create buffer
+				int count;                            // actual number of bytes read
+				int sum = 0;                          // total number of bytes read
+
+				// read until Read method returns 0 (end of the stream has been reached)
+				while ((count = fileStream.Read(buffer, sum, length - sum)) > 0)
+					sum += count;  // sum is a buffer offset for next reading
+			}
+			catch (Exception ex)
+			{
+				str = @"\n" + ex.Message.ToString() + @"\n";
+			}
+			finally
+			{
+				fileStream.Close();
+			}
+			str = System.Text.Encoding.ASCII.GetString(buffer);
+			return str;
+		}
+
+		private ModbusIpMaster ConnectModBus()
+		{
+			TcpClient tcpClient = null;
+			ModbusIpMaster master = null;
+			int count = 0;
+			Ping netMon = default(Ping);
+			netMon = new Ping();
+			PingReply reply = netMon.Send(this._ipAddress, 4000);
+			do
+			{
+				#region StopService
+				if (ServiceStop.stop_service == 1)
+				{
+					try
+					{
+						if (master != null)
+						{
+							master.Dispose();
+						}
+						if (tcpClient != null && tcpClient.Connected)
+						{
+							tcpClient.Close();
+						}
+						Logger.WriteDebugLog("stopping the service. coming out of main while loop.");
+						break;
+					}
+					catch (Exception ex)
+					{
+						Logger.WriteErrorLog(ex.Message);
+						break;
+					}
+				}
+				#endregion
+				reply = netMon.Send(this._ipAddress, 4000);
+				try
+				{
+					if (reply.Status == IPStatus.Success)
+					{
+						tcpClient = new TcpClient(this._ipAddress, this._portNo);  //Port no is always 502
+						tcpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+						Thread.Sleep(300);
+						master = ModbusIpMaster.CreateIp(tcpClient);
+						master.Transport.Retries = 4;
+						master.Transport.ReadTimeout = 4000;
+						master.Transport.WriteTimeout = 4000;
+						master.Transport.WaitToRetryMilliseconds = 1000;
+						return master;
+					}
+					else
+					{
+						Logger.WriteDebugLog("Disconnected from network (No ping). Ping Status = " + reply.Status.ToString());
+						Thread.Sleep(1000 * 4);
+					}
+					count++;
+				}
+				catch (Exception ex)
+				{
+					Logger.WriteErrorLog(ex.ToString());
+				}
+				finally
+				{
+
+				}
+			} while (reply.Status != IPStatus.Success && count < 3);
+			if (netMon != null)
+			{
+				netMon.Dispose();
+			}
+			return master;
+		}
+
+		private void WriteToACKFile(string ACKFilePath, string dataToWrite)
+		{
+			StreamWriter writer = null;
+			try
+			{ 
+				writer = new StreamWriter(ACKFilePath, false);
+				writer.Write(dataToWrite);
+				writer.Flush();
+				Logger.WriteDebugLog("ACK file generated successfully.");
+			}
+			catch (Exception ex)
+			{
+				Logger.WriteErrorLog(ex.ToString());
+			}
+			finally
+			{
+				if (writer != null)
+				{
+					writer.Close();
+					writer.Dispose();
+				}
+			}
+		}
+
+		private bool CheckPingStatus(string ipAddress)
+		{
+			bool pingStatus = false;
+			IPStatus status = IPStatus.Unknown;
+			Ping ping = null;
+			try
+			{
+				ping = new Ping();
+				PingReply pingReply = ping.Send(ipAddress, 10000);
+				status = pingReply.Status;
+				if (pingReply.Status == IPStatus.Success)
+				{
+					pingStatus = true;
+				}
+				else
+				{
+					Logger.WriteErrorLog(string.Format("Not able to ping IP Address {0} . Ping status {1} ", ipAddress, status.ToString()));
+				}
+			}
+			catch (Exception)
+			{
+				Logger.WriteErrorLog(string.Format("Not able to ping IP Address {0} . Ping status {1} ", ipAddress, status.ToString()));
+			}
+			finally
+			{
+				if (ping != null)
+				{
+					ping.Dispose();
+				}
+			}
+			return pingStatus;
+		}
+	}
+}
