@@ -1978,7 +1978,22 @@ namespace TPM_TrakSmartDataService_Phantom
                                 int Output = -1;
                                 DateTime UpStartDatetime = DateTime.MinValue;
                                 DateTime UpEndDatetime = DateTime.MinValue;
+                                DateTime AlarmRaisedTS = DateTime.MinValue;
+                                int startAddress = int.MinValue;
+                                int endAddress = int.MinValue;
+                                int addr = int.MinValue;
+                                int addressCount = int.MinValue;
+                                int exceededCount = 0;
                                 DataTable dtAlarmMasterInfo = DatabaseAccess.GetAlarmMasterInfo();
+                                if (dtAlarmMasterInfo != null && dtAlarmMasterInfo.Rows.Count > 0)
+                                {
+                                    startAddress = int.Parse(dtAlarmMasterInfo.AsEnumerable().Min(X => X["AlarmNo"].ToString()));
+                                    endAddress = int.Parse(dtAlarmMasterInfo.AsEnumerable().Max(X => X["AlarmNo"].ToString()));
+                                    addr = startAddress;
+                                    addressCount = (endAddress - startAddress) + 1 > 200 ? 200 : (endAddress - startAddress) + 1;
+                                    exceededCount = ((endAddress - startAddress) + 1) - 200 > 0 ? (endAddress - startAddress) + 1 : 0;
+                                }
+                                    
                                 //int Comm = 100;
                                 while (true)
                                 {
@@ -2029,40 +2044,36 @@ namespace TPM_TrakSmartDataService_Phantom
                                             SaveStringToTPMFile(type1Str);
                                             DatabaseAccess.ProcessDataString(type1Str, out Output);
 
-                                            #region Handle Alarm
-                                            if (dtAlarmMasterInfo != null && dtAlarmMasterInfo.Rows.Count > 0)
-                                            {
-                                                int startAddress = dtAlarmMasterInfo.AsEnumerable().Max(X => X.Field<int>("AlarmNo"));
-                                                int endAddress = dtAlarmMasterInfo.AsEnumerable().Min(X => X.Field<int>("AlarmNo"));
-                                                int addr = startAddress;
-                                                var datas = RoboClient.ReadBytes(DataType.Memory, DBNumber, startAddress, (endAddress - startAddress) + 1);
-                                                BitArray alarmsBits_current = new BitArray(datas.ToArray());
+                                            RoboClient.Write(string.Format("DB{0}.DBX28.0", DBNumber), false);
+                                            Logger.WriteDebugLog("Data Read flag (DBX28.0) is set to Low. Stopped Reading Data From PLC.");
+                                        }                                       
 
-                                                if (_alarmsBits_Previous == null)
-                                                {
-                                                    _alarmsBits_Previous = new BitArray(alarmsBits_current.Length);
-                                                }
-                                                for (int pos = 0; pos < alarmsBits_current.Length; pos++)
-                                                {
-                                                    if (!_alarmsBits_Previous[pos] && alarmsBits_current[pos])
+                                        #region Handle Alarm
+                                        if (startAddress!=int.MinValue)
+                                        {                                            
+                                            var datas = RoboClient.ReadBytes(DataType.Memory, DBNumber, startAddress, addressCount);
+                                            BitArray alarmsBits_current = new BitArray(datas.ToArray());
+                                            AlarmRaisedTS = DateTime.Now;
+                                            if (_alarmsBits_Previous == null)
+                                            {
+                                                _alarmsBits_Previous = new BitArray(alarmsBits_current.Length);
+                                            }
+                                            for (int pos = 0; pos < alarmsBits_current.Length; pos++)
+                                            {
+                                                if (!_alarmsBits_Previous[pos] && alarmsBits_current[pos])
+                                                {                                                    
+                                                    string _alarm_Address = string.Format("{0}.{1}", (addr + pos / 8), (pos % 8));
+                                                    var Raised_Alarm = dtAlarmMasterInfo.AsEnumerable().Where(x => x.Field<string>("AlarmAddress").Trim(' ').Equals(_alarm_Address)).FirstOrDefault();
+                                                    if (Raised_Alarm != null)
                                                     {
-                                                        string _alarm_Address = string.Format("{0}.{1}", (addr + pos / 8), (pos % 8));
-                                                        var Raised_Alarm = dtAlarmMasterInfo.AsEnumerable().Where(x => x.Field<string>("AlarmAddress").Equals(_alarm_Address)).FirstOrDefault();
-                                                        if (Raised_Alarm != null)
-                                                        {
-                                                            DatabaseAccess.UpdateAlarmRaisedToDB(this._interfaceId, Raised_Alarm);
-                                                        }
+                                                        DatabaseAccess.UpdateAlarmRaisedToDB(this._machineId, Raised_Alarm, AlarmRaisedTS);
                                                     }
                                                 }
-                                                _alarmsBits_Previous = alarmsBits_current;
-                                            } 
-                                            #endregion
+                                            }
+                                            _alarmsBits_Previous = alarmsBits_current;
+                                            //Thread.Sleep(4000);
                                         }
-
-                                        RoboClient.Write(string.Format("DB{0}.DBX28.0", DBNumber), false);
-                                        Logger.WriteDebugLog("Data Read flag (DBX28.0) is set to Low. Stopped Reading Data From PLC.");
-
-
+                                        #endregion
                                         //#region Communication
                                         //try
                                         //{

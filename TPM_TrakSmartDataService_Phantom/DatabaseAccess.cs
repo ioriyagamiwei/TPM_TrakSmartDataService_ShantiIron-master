@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Data;
 using System.Data.SqlClient;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -852,19 +853,20 @@ end";
 			return dtAlarm;
         }
 
-        internal static void UpdateAlarmRaisedToDB(string machineID,DataRow raised_Alarm)
+        internal static void UpdateAlarmRaisedToDB(string machineID,DataRow raised_Alarm, DateTime alarmTime)
         {
 			SqlConnection conn = ConnectionManager.GetConnection();
 			SqlCommand cmd = null;
-			string query = @"insert into [Focas_AlarmHistory] ([AlarmNo], [AlarmMPos], [AlarmTime], [EndTime], [MachineID]) values(@alarmNo, @alarmMPos, @alarmTime, @endTime, @mc)";
+			string query = @"insert into [Focas_AlarmHistory] ([AlarmNo], [AlarmMSG], [AlarmGroupNo], [AlarmMPos], [AlarmTime], [MachineID]) values(@alarmNo, @msg, @alarmGroupNo, @alarmMPos, @alarmTime, @mc)";
 
             try
             {
 				cmd = new SqlCommand(query, conn);
 				cmd.Parameters.AddWithValue("@alarmNo", raised_Alarm["AlarmNo"].ToString());
+				cmd.Parameters.AddWithValue("@msg", raised_Alarm["Description"].ToString());
 				cmd.Parameters.AddWithValue("@alarmMPos", raised_Alarm["AlarmAddress"].ToString());
-				cmd.Parameters.AddWithValue("@alarmTime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-				cmd.Parameters.AddWithValue("@endTime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+				cmd.Parameters.AddWithValue("@alarmTime", alarmTime.ToString("yyyy-MM-dd HH:mm:ss"));
+				cmd.Parameters.AddWithValue("@alarmGroupNo", 0);
 				cmd.Parameters.AddWithValue("@mc", machineID);
 
 				int result = cmd.ExecuteNonQuery();
