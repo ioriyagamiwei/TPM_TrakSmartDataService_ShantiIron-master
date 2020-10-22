@@ -2071,23 +2071,10 @@ namespace TPM_TrakSmartDataService_Phantom
                                                 }
                                             }
                                             _alarmsBits_Previous = alarmsBits_current;
-                                            //Thread.Sleep(4000);
+                                            Thread.Sleep(4000);
                                         }
                                         #endregion
-                                        //#region Communication
-                                        //try
-                                        //{
-                                        //    RoboClient.Write(string.Format("DB{0}.DBB104", DBNumber), (byte)Comm);
-                                        //}
-                                        //catch (Exception ex)
-                                        //{
-                                        //    Logger.WriteErrorLog(ex.ToString());
-                                        //}
-                                        //if (Comm == 100)
-                                        //    Comm = 200;
-                                        //else
-                                        //    Comm = 100;
-                                        //#endregion
+                                        
                                     }
                                     catch (Exception ex)
                                     {
